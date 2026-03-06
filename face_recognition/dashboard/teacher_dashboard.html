@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+
+<title>Teacher Dashboard</title>
+
+<link rel="stylesheet" href="css/style.css">
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+</head>
+
+<body>
+
+<h1>Teacher Dashboard</h1>
+
+<div class="card">
+
+<h3>Enter Course ID</h3>
+
+<input id="course_id" placeholder="Course ID">
+
+<button onclick="loadClassAnalytics()">Load Analytics</button>
+
+</div>
+
+<div class="dashboard">
+
+<div class="card">
+
+<h3>Present Today</h3>
+<p id="present_today"></p>
+
+</div>
+
+<div class="card">
+
+<h3>Absent Today</h3>
+<p id="absent_today"></p>
+
+</div>
+
+</div>
+
+<h3>Class Attendance Distribution</h3>
+
+<canvas id="classChart"></canvas>
+
+<h2>Manual Attendance</h2>
+
+<div class="card">
+
+<input id="student_id" placeholder="Student ID">
+
+<select id="status">
+
+<option value="present">Present</option>
+<option value="absent">Absent</option>
+<option value="late">Late</option>
+
+</select>
+
+<button onclick="markAttendance()">Mark Attendance</button>
+
+</div>
+
+<script src="js/teacher.js"></script>
+<script src="js/charts.js"></script>
+
+</body>
+</html>

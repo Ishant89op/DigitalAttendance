@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+
+<title>Student Dashboard</title>
+
+<link rel="stylesheet" href="css/style.css">
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+</head>
+
+<body>
+
+<h1>Student Dashboard</h1>
+
+<div class="dashboard">
+
+<div class="card">
+
+<h3>Attendance Percentage</h3>
+<p id="percentage"></p>
+
+</div>
+
+<div class="card">
+
+<h3>Total Classes</h3>
+<p id="total_classes"></p>
+
+</div>
+
+<div class="card">
+
+<h3>Classes Present</h3>
+<p id="present"></p>
+
+</div>
+
+</div>
+
+<h3>Attendance Distribution</h3>
+
+<canvas id="attendanceChart"></canvas>
+
+<p id="warning"></p>
+
+<script src="js/student.js"></script>
+<script src="js/charts.js"></script>
+
+</body>
+</html>
