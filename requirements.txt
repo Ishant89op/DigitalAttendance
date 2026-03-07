@@ -1,0 +1,16 @@
+# Requires Python 3.10–3.12 (face-recognition/dlib not yet supported on 3.13+)
+
+fastapi
+uvicorn[standard]
+pydantic
+opencv-python
+face-recognition
+mediapipe
+numpy
+setuptools<75
+
+# dlib — install pre-built wheel first (before pip install -r requirements.txt):
+# pip install https://github.com/z-mahmud22/Dlib_Windows_Python3.x/raw/main/dlib-19.24.99-cp312-cp312-win_amd64.whl
+
+# face_recognition_models — install from GitHub:
+# pip install git+https://github.com/ageitgey/face_recognition_models

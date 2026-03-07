@@ -1,0 +1,14 @@
+# Virtual environment
+venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Database
+*.db
+
+# IDE
+.vscode/
+.idea/
