@@ -1,29 +1,73 @@
 import cv2
-import face_recognition
 import numpy as np
 import time
 
+from insightface.app import FaceAnalysis
+
 from utils.face_loader import load_known_faces
 from attendance.attendance_manager import mark_attendance
+from services.lecture_service import get_active_lecture
 
 
-COURSE_ID = "CS101"
+# ==============================
+# CONFIG
+# ==============================
+CLASSROOM_ID = "CR101"
+DEVICE_ID = "CR101_CAM1"
+
+SIMILARITY_THRESHOLD = 0.5
+COOLDOWN_SECONDS = 10
+MAX_FACES = 4
 
 
-def start_recognition():
+# ==============================
+# LOAD MODEL
+# ==============================
+print("Loading InsightFace model...")
+app = FaceAnalysis()
+app.prepare(ctx_id=-1, det_size=(640, 640))  # CPU mode
 
-    print("Loading known faces...")
 
-    known_encodings, known_names, known_ids = load_known_faces()
+# ==============================
+# LOAD KNOWN FACES
+# ==============================
+print("Loading known student faces...")
+known_encodings, known_names, known_ids = load_known_faces()
 
+if len(known_encodings) > 0:
+    known_encodings = np.array(known_encodings)
+else:
+    known_encodings = np.array([])
+
+
+# ==============================
+# FACE MATCH FUNCTION
+# ==============================
+def recognize_face(face_embedding):
     if len(known_encodings) == 0:
-        print("No registered students found")
-        return
+        return None, None
+
+    similarities = np.dot(known_encodings, face_embedding)
+
+    best_index = np.argmax(similarities)
+    best_score = similarities[best_index]
+
+    if best_score > SIMILARITY_THRESHOLD:
+        return known_ids[best_index], known_names[best_index]
+
+    return None, None
+
+
+# ==============================
+# MAIN FUNCTION
+# ==============================
+def start_recognition():
 
     cap = cv2.VideoCapture(0)
 
     last_seen = {}
-    recognition_buffer = {}
+
+    print("Recognition system started...")
 
     while True:
 
@@ -31,121 +75,78 @@ def start_recognition():
         if not ret:
             break
 
-        # Resize for faster processing
-        small_frame = cv2.resize(frame, (0,0), fx=0.25, fy=0.25)
+        lecture_id = get_active_lecture(CLASSROOM_ID)
 
-        rgb_small = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
+        # ==============================
+        # WAIT MODE (NO ACTIVE LECTURE)
+        # ==============================
+        if not lecture_id:
 
-        face_locations = face_recognition.face_locations(rgb_small)
+            cv2.putText(frame, "Waiting for attendance...",
+                        (50, 50),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        1,
+                        (0, 0, 255),
+                        2)
 
-        face_encodings = face_recognition.face_encodings(rgb_small, face_locations)
+            cv2.imshow("Attendance System", frame)
 
-        face_names = []
-        face_ids = []
-        confidences = []
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
 
-        for face_encoding in face_encodings:
+            continue
 
-            distances = face_recognition.face_distance(
-                known_encodings,
-                face_encoding
-            )
+        # ==============================
+        # DETECT FACES
+        # ==============================
+        faces = app.get(frame)
 
-            best_match = np.argmin(distances)
+        # Limit number of faces
+        faces = sorted(faces, key=lambda x: (x.bbox[2] - x.bbox[0]), reverse=True)
+        faces = faces[:MAX_FACES]
 
-            distance = distances[best_match]
+        for face in faces:
 
-            confidence = round((1 - distance) * 100, 2)
+            bbox = face.bbox.astype(int)
+            embedding = face.embedding
 
-            if distance < 0.45:
+            student_id, name = recognize_face(embedding)
 
-                name = known_names[best_match]
-                student_id = known_ids[best_match]
+            if student_id:
 
-                recognition_buffer[name] = recognition_buffer.get(name,0) + 1
-
-                if recognition_buffer[name] >= 3:
-
-                    face_names.append(name)
-                    face_ids.append(student_id)
-                    confidences.append(confidence)
-
-                else:
-
-                    face_names.append("Scanning")
-                    face_ids.append(None)
-                    confidences.append(0)
-
-            else:
-
-                face_names.append("Unknown")
-                face_ids.append(None)
-                confidences.append(0)
-
-        for (top,right,bottom,left), name, student_id, conf in zip(
-            face_locations,
-            face_names,
-            face_ids,
-            confidences
-        ):
-
-            top *= 4
-            right *= 4
-            bottom *= 4
-            left *= 4
-
-            if name not in ["Unknown","Scanning"]:
-
-                color = (0,255,0)
-
-                label = f"{name} ({conf}%)"
-
+                # cooldown check
                 if student_id not in last_seen or \
-                   time.time() - last_seen[student_id] > 10:
+                   time.time() - last_seen[student_id] > COOLDOWN_SECONDS:
 
-                    mark_attendance(
-                        student_id,
-                        COURSE_ID,
-                        "present",
-                        "AI"
-                    )
-
+                    mark_attendance(student_id, lecture_id)
                     last_seen[student_id] = time.time()
 
-            elif name == "Scanning":
-
-                color = (255,255,0)
-
-                label = "Scanning..."
+                label = f"{name}"
+                color = (0, 255, 0)
 
             else:
-
-                color = (0,0,255)
-
                 label = "Unknown"
+                color = (0, 0, 255)
 
-            cv2.rectangle(frame,(left,top),(right,bottom),color,2)
+            # Draw bounding box
+            x1, y1, x2, y2 = bbox
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
 
-            cv2.rectangle(frame,(left,bottom-35),(right,bottom),color,cv2.FILLED)
+            cv2.putText(frame,
+                        label,
+                        (x1, y1 - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.7,
+                        color,
+                        2)
 
-            cv2.putText(
-                frame,
-                label,
-                (left+6,bottom-6),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (255,255,255),
-                2
-            )
-
+        # ==============================
+        # DISPLAY
+        # ==============================
         cv2.imshow("Face Attendance System", frame)
 
-        if cv2.waitKey(1) & 0xFF == ord("q"):
+        if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
     cap.release()
     cv2.destroyAllWindows()
-
-
-if __name__ == "__main__":
-    start_recognition()

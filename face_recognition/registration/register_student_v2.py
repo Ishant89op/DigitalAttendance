@@ -1,76 +1,71 @@
 import cv2
-import mediapipe as mp
-import face_recognition
 import numpy as np
+from insightface.app import FaceAnalysis
 from database.database import get_connection
 
-# Mediapipe Face Detector
-mp_face_detection = mp.solutions.face_detection
-face_detector = mp_face_detection.FaceDetection(
-    model_selection=0,
-    min_detection_confidence=0.7
-)
 
+# ==============================
+# CONFIG
+# ==============================
+SAMPLES_REQUIRED = 20
+
+
+# ==============================
+# LOAD MODEL
+# ==============================
+print("Loading InsightFace model...")
+app = FaceAnalysis()
+app.prepare(ctx_id=-1, det_size=(640, 640))
+
+
+# ==============================
+# REGISTER FUNCTION
+# ==============================
 def register_student():
 
     student_id = input("Enter Student ID: ")
     student_name = input("Enter Student Name: ")
-    password = input("Enter Password: ")
     department = input("Enter Department: ")
-    semester = input("Enter Semester: ")
+    semester = int(input("Enter Semester: "))
 
     cap = cv2.VideoCapture(0)
 
     encodings_list = []
-    samples_required = 20
 
-    print("\nLook at the camera.")
-    print("Capturing face samples...\n")
+    print("\nLook at the camera...")
+    print("Capturing samples...\n")
 
     while True:
+
         ret, frame = cap.read()
         if not ret:
             break
 
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        faces = app.get(frame)
 
-        results = face_detector.process(rgb_frame)
+        if faces:
 
-        if results.detections:
+            for face in faces:
 
-            for detection in results.detections:
+                bbox = face.bbox.astype(int)
+                embedding = face.embedding
 
-                bbox = detection.location_data.relative_bounding_box
+                # Save embedding
+                encodings_list.append(embedding)
 
-                ih, iw, _ = frame.shape
+                # Draw box
+                x1, y1, x2, y2 = bbox
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0,255,0), 2)
 
-                x = int(bbox.xmin * iw)
-                y = int(bbox.ymin * ih)
-                w = int(bbox.width * iw)
-                h = int(bbox.height * ih)
+                print(f"Captured sample {len(encodings_list)}/{SAMPLES_REQUIRED}")
 
-                top = y
-                right = x + w
-                bottom = y + h
-                left = x
+                break  # only one face per frame
 
-                cv2.rectangle(frame, (x,y), (x+w,y+h), (0,255,0), 2)
-
-                encodings = face_recognition.face_encodings(
-                    rgb_frame,
-                    [(top, right, bottom, left)]
-                )
-
-                if encodings:
-
-                    encodings_list.append(encodings[0])
-
-                    print(f"Captured sample {len(encodings_list)}/{samples_required}")
-
+        # Display count
         cv2.putText(
             frame,
-            f"Samples: {len(encodings_list)}/{samples_required}",
-            (10,40),
+            f"Samples: {len(encodings_list)}/{SAMPLES_REQUIRED}",
+            (10, 40),
             cv2.FONT_HERSHEY_SIMPLEX,
             1,
             (0,255,0),
@@ -79,7 +74,7 @@ def register_student():
 
         cv2.imshow("Student Registration", frame)
 
-        if len(encodings_list) >= samples_required:
+        if len(encodings_list) >= SAMPLES_REQUIRED:
             break
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -92,49 +87,49 @@ def register_student():
         print("No face captured.")
         return
 
-    print("\nProcessing encodings...")
+    print("\nProcessing embeddings...")
 
-    avg_encoding = np.mean(encodings_list, axis=0).astype(np.float32)
+    # ==============================
+    # AVERAGE EMBEDDING
+    # ==============================
+    avg_embedding = np.mean(encodings_list, axis=0)
 
-    encoding_bytes = avg_encoding.tobytes()
+    # Normalize (VERY IMPORTANT)
+    avg_embedding = avg_embedding / np.linalg.norm(avg_embedding)
 
+    embedding_bytes = avg_embedding.astype(np.float32).tobytes()
+
+    # ==============================
+    # SAVE TO DATABASE
+    # ==============================
     conn = get_connection()
     cur = conn.cursor()
 
     try:
-
-        # Create user account
-        cur.execute("""
-            INSERT INTO users (id, name, role, password)
-            VALUES (?, ?, ?, ?)
-        """, (student_id, student_name, "student", password))
-
-
-        # Create student profile
         cur.execute("""
             INSERT INTO students
-            (student_id, user_id, face_encoding, department, semester)
+            (student_id, name, department, semester, face_encoding)
             VALUES (?, ?, ?, ?, ?)
         """, (
             student_id,
-            student_id,
-            encoding_bytes,
+            student_name,
             department,
-            semester
+            semester,
+            embedding_bytes
         ))
 
         conn.commit()
+        print("\n✔ Registration Successful")
 
-        print("\nStudent Registered Successfully.")
-
-    except Exception as e:
-
-        print("\nRegistration failed:", e)
+    except:
+        print("\n❌ Student already exists")
 
     finally:
-
         conn.close()
 
 
+# ==============================
+# RUN
+# ==============================
 if __name__ == "__main__":
     register_student()

@@ -1,70 +1,29 @@
-from database.database import init_db, get_connection
-from registration.register_student_v2 import register_student
+from database.database import init_db
 from recognition.recognizer_v2 import start_recognition
-
-
-def create_default_teacher():
-
-    conn = get_connection()
-    cur = conn.cursor()
-
-    try:
-
-        cur.execute("""
-        INSERT INTO users (id,name,role,password)
-        VALUES ('teacher1','Default Teacher','teacher','1234')
-        """)
-
-        conn.commit()
-
-        print("Default teacher created")
-        print("Login ID: teacher1 | Password: 1234")
-
-    except:
-        print("Teacher already exists")
-
-    finally:
-        conn.close()
 
 
 def main():
 
     while True:
 
-        print("\n===== FACE ATTENDANCE SYSTEM =====\n")
-
+        print("\n===== FACE ATTENDANCE SYSTEM =====")
         print("1. Initialize Database")
-        print("2. Create Default Teacher")
-        print("3. Register Student")
-        print("4. Start Face Recognition")
-        print("5. Exit")
+        print("2. Start Recognition")
+        print("3. Exit")
 
-        choice = input("\nEnter choice: ")
+        choice = input("Enter choice: ")
 
         if choice == "1":
-
             init_db()
 
         elif choice == "2":
-
-            create_default_teacher()
-
-        elif choice == "3":
-
-            register_student()
-
-        elif choice == "4":
-
             start_recognition()
 
-        elif choice == "5":
-
-            print("Exiting system...")
+        elif choice == "3":
             break
 
         else:
-
-            print("Invalid option")
+            print("Invalid choice")
 
 
 if __name__ == "__main__":
