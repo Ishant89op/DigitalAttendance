@@ -58,23 +58,21 @@ async def start_recognition_process(classroom_id: str) -> bool:
 
     try:
         if IS_WINDOWS:
-            # CREATE_NEW_CONSOLE = 0x10  — gives the child its own window
-            # This is the key fix: the child gets a real desktop session
-            # so cv2.imshow and VideoCapture work properly.
-            DETACHED_PROCESS   = 0x00000008
-            CREATE_NEW_CONSOLE = 0x00000010
+            # CREATE_NO_WINDOW = 0x08000000  — gives the child its own invisible session
+            # so cv2.imshow and VideoCapture work properly without a console window
+            CREATE_NO_WINDOW = 0x08000000
 
             proc = subprocess.Popen(
                 cmd,
                 cwd=str(project_root),
                 env=env,
-                creationflags=CREATE_NEW_CONSOLE,
+                creationflags=CREATE_NO_WINDOW,
                 # Don't pipe stdout — let it print to its own console window
             )
             _processes[classroom_id] = proc
             logger.info(
                 "Recognition process started for %s (pid=%d) — "
-                "a new console window should have opened.",
+                "in background.",
                 classroom_id, proc.pid
             )
         else:

@@ -70,8 +70,9 @@ def cmd_recognize():
     )
     args, _ = parser.parse_known_args(sys.argv[2:])
 
+    # recognizer manages its own threads + async worker internally — call directly
     from recognition.recognizer import main
-    asyncio.run(main(args.classroom))
+    main(args.classroom)
 
 
 def cmd_server():

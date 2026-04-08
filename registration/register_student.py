@@ -17,24 +17,19 @@ import numpy as np
 
 from core.database import init_pool, close_pool, get_conn, transaction
 from utils.face_utils import get_model, normalize
+from utils.preview import create_preview_window, detect_preview_backend
 from config.settings import recog as cfg
 
 logger = logging.getLogger(__name__)
 
-# Detect if OpenCV GUI is available
-def _has_gui():
-    try:
-        cv2.namedWindow("_test", cv2.WINDOW_NORMAL)
-        cv2.destroyWindow("_test")
-        return True
-    except cv2.error:
-        return False
-
-GUI_AVAILABLE = _has_gui()
-if not GUI_AVAILABLE:
-    print("  [Note] OpenCV GUI not available — running in terminal-only mode.")
+PREVIEW_BACKEND = detect_preview_backend()
+GUI_AVAILABLE = PREVIEW_BACKEND != "none"
+if PREVIEW_BACKEND == "tk":
+    print("  [Note] OpenCV GUI is unavailable. Using Tk preview window instead.\n")
+elif PREVIEW_BACKEND == "none":
+    print("  [Note] No GUI preview backend is available — running in terminal-only mode.")
     print("  To enable camera preview, run:  pip uninstall opencv-python-headless -y")
-    print("                                  pip install opencv-python\n")
+    print("                                  pip install --force-reinstall opencv-python\n")
 
 
 async def student_exists(student_id: str) -> dict | None:
@@ -149,10 +144,7 @@ async def register_student() -> None:
     cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
-    if GUI_AVAILABLE:
-        win_name = "AttendX — Face Registration"
-        cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(win_name, 800, 520)
+    preview = create_preview_window("AttendX — Face Registration", 800, 520) if GUI_AVAILABLE else None
 
     samples      = []
     empty_frames = 0
@@ -184,27 +176,30 @@ async def register_student() -> None:
             if GUI_AVAILABLE:
                 display = _draw_registration_frame(frame, [], len(samples), cfg.samples_required, student['name'])
 
-        if GUI_AVAILABLE:
-            cv2.imshow(win_name, display)
-            key = cv2.waitKey(1) & 0xFF
-            if key in (ord('q'), 27):
+        if preview is not None:
+            keep_running = preview.show(display)
+            if not keep_running:
                 print("\n  Registration cancelled.")
                 cap.release()
-                cv2.destroyAllWindows()
+                preview.close()
                 return
 
         time.sleep(0.03)
 
-    if GUI_AVAILABLE and len(samples) >= cfg.samples_required:
+    if preview is not None and len(samples) >= cfg.samples_required:
         ret, frame = cap.read()
         if ret:
-            cv2.imshow(win_name, _draw_registration_frame(
-                frame, [], cfg.samples_required, cfg.samples_required, student['name']))
-            cv2.waitKey(1200)
+            display = _draw_registration_frame(
+                frame, [], cfg.samples_required, cfg.samples_required, student['name']
+            )
+            for _ in range(30):
+                if not preview.show(display):
+                    break
+                time.sleep(0.04)
 
     cap.release()
-    if GUI_AVAILABLE:
-        cv2.destroyAllWindows()
+    if preview is not None:
+        preview.close()
 
     if len(samples) < cfg.samples_required:
         print(f"\n  Only {len(samples)} samples captured. Registration aborted.")
