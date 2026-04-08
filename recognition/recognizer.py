@@ -21,6 +21,7 @@ import numpy as np
 
 from core.database import init_pool, close_pool
 from utils.face_utils import get_model, load_known_faces, cosine_match
+from utils.preview import create_preview_window, detect_preview_backend
 from attendance.attendance_manager import mark_attendance
 from services.lecture_service import get_active_lecture, start_lecture
 from config.settings import recog as cfg
@@ -32,21 +33,15 @@ RELOAD_INTERVAL_SECS = 60
 WAIT_POLL_SECS       = 3
 AUTO_START           = True
 
-# Auto-detect GUI support
-def _has_gui():
-    try:
-        cv2.namedWindow("_test", cv2.WINDOW_NORMAL)
-        cv2.destroyWindow("_test")
-        return True
-    except cv2.error:
-        return False
-
-SHOW_WINDOW = _has_gui()
-if not SHOW_WINDOW:
-    print("  [Note] OpenCV GUI not available — running headless (terminal output only).")
-    print("  To enable camera preview window, run:")
+PREVIEW_BACKEND = detect_preview_backend()
+SHOW_WINDOW = PREVIEW_BACKEND != "none"
+if PREVIEW_BACKEND == "tk":
+    print("  [Note] OpenCV GUI is unavailable. Using Tk preview window instead.\n")
+elif PREVIEW_BACKEND == "none":
+    print("  [Note] No GUI preview backend is available — running headless.")
+    print("  To restore a native preview window, run:")
     print("    pip uninstall opencv-python-headless -y")
-    print("    pip install opencv-python\n")
+    print("    pip install --force-reinstall opencv-python\n")
 
 known_matrix : np.ndarray = np.empty((0, cfg.embedding_dim), dtype=np.float32)
 known_names  : list[str]  = []
@@ -154,10 +149,11 @@ async def run_recognition(classroom_id: str) -> None:
         logger.info("  Running headless — press Ctrl+C to stop")
     logger.info("=" * 55)
 
+    preview = None
     if SHOW_WINDOW:
-        win = f"AttendX — {classroom_id}"
-        cv2.namedWindow(win, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(win, 800, 520)
+        preview = create_preview_window(f"AttendX — {classroom_id}", 800, 520)
+        if preview is None:
+            logger.warning("Preview backend detection said GUI was available, but window creation failed.")
 
     lecture_id    = None
     present_today = set()
@@ -214,13 +210,12 @@ async def run_recognition(classroom_id: str) -> None:
                         else:
                             face_results.append(None)
 
-            if SHOW_WINDOW:
+            if preview is not None:
                 display = _draw_frame(frame, faces, face_results,
                                       classroom_id, lecture_id,
                                       len(present_today), len(known_ids))
-                cv2.imshow(win, display)
-                key = cv2.waitKey(1) & 0xFF
-                if key in (ord('q'), 27):
+                keep_running = preview.show(display)
+                if not keep_running:
                     logger.info("User quit — stopping.")
                     break
 
@@ -231,8 +226,8 @@ async def run_recognition(classroom_id: str) -> None:
         pass
     finally:
         cap.release()
-        if SHOW_WINDOW:
-            cv2.destroyAllWindows()
+        if preview is not None:
+            preview.close()
         sys.stdout.write("\n")
         logger.info("Recognition engine stopped.")
 
