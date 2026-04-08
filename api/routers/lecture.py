@@ -47,6 +47,7 @@ async def classroom_login(req: ClassroomLoginRequest):
         "capacity":          row["capacity"],
         "active_lecture_id": active_id,
         "camera_active":     is_running(req.classroom_id),
+        "windows_mode":      IS_WINDOWS,
         "upcoming_lectures": upcoming,
     }
 
@@ -59,6 +60,7 @@ async def upcoming(classroom_id: str, limit: int = 3):
         "classroom_id":      classroom_id,
         "active_lecture_id": active_id,
         "camera_active":     is_running(classroom_id),
+        "windows_mode":      IS_WINDOWS,
         "upcoming":          lectures,
     }
 
@@ -100,7 +102,7 @@ async def start(req: LectureStartRequest):
         # On Windows: attempt it, but don't rely on it
         try:
             cam_started = await start_recognition_process(req.classroom_id)
-            cam_note = "Camera process launched in new window." if cam_started else "Already running."
+            cam_note = "Camera process launched in background." if cam_started else "Already running."
         except Exception as e:
             cam_note = f"Auto-start failed ({e}). Run manually: python main.py recognize --classroom {req.classroom_id}"
 
@@ -110,7 +112,7 @@ async def start(req: LectureStartRequest):
         "camera_started": cam_started,
         "windows_mode":   IS_WINDOWS,
         "message":        cam_note,
-        "manual_command": f"python main.py recognize --classroom {req.classroom_id}" if IS_WINDOWS else None,
+        "manual_command": f"python main.py recognize --classroom {req.classroom_id}" if (IS_WINDOWS and not cam_started) else None,
     }
 
 

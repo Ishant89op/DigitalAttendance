@@ -65,7 +65,7 @@ class DatabaseSettings:
 @dataclass(frozen=True)
 class RecognitionSettings:
     model_name: str         = "buffalo_l"        # InsightFace model pack
-    det_size: tuple         = (640, 640)
+    det_size: tuple         = (320, 320)          # 320×320 is ~4× faster on CPU; same accuracy at <3m range
     ctx_id: int             = -1                 # -1 = CPU, 0+ = GPU index
     similarity_threshold: float = 0.50           # cosine similarity cutoff
     cooldown_seconds: int   = 30                 # prevent duplicate marks

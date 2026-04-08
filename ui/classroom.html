@@ -214,10 +214,13 @@ async function init() {
 async function refreshState() {
   try {
     const res = await api.get('/lecture/upcoming/' + classroomId);
+    if (res.windows_mode !== undefined) isWindowsMode = res.windows_mode;
+    
     if (res.active_lecture_id) {
       // Check if this looks like a stale session:
       // active_lecture_id exists but camera is NOT running and we just loaded the page
-      const appearsStale = !res.camera_active && !activeLectureId;
+      // On Windows, the camera is often untracked (manual terminal), so we shouldn't assume stale
+      const appearsStale = !res.camera_active && !activeLectureId && !isWindowsMode;
       if (appearsStale) {
         showStaleBanner(res.active_lecture_id);
       } else {
