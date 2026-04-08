@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AttendX — Classroom</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/dashboard.css">
+<style>
+  .lecture-card {
+    background: var(--surface); border: 1.5px solid var(--border);
+    border-radius: 12px; padding: 20px 22px; margin-bottom: 12px;
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 16px; cursor: pointer; transition: all 0.15s;
+    position: relative; overflow: hidden;
+  }
+  .lecture-card::before {
+    content:''; position:absolute; left:0; top:0; bottom:0;
+    width:4px; background:var(--border2); border-radius:4px 0 0 4px; transition:background 0.15s;
+  }
+  .lecture-card.ongoing { border-color:#bbf7d0; background:#f0fdf4; }
+  .lecture-card.ongoing::before { background:var(--green); }
+  .lecture-card.upcoming_today { border-color:var(--border2); }
+  .lecture-card.upcoming_today::before { background:var(--blue); }
+  .lecture-card.upcoming { border-color:var(--border); opacity:0.8; }
+  .lecture-card.upcoming::before { background:var(--muted); }
+  .lecture-card:hover { border-color:var(--blue); box-shadow:0 2px 12px rgba(59,110,245,0.12); transform:translateY(-1px); }
+  .lecture-card.ongoing:hover { border-color:var(--green); }
+  .lc-left { flex:1; min-width:0; }
+  .lc-course { font-size:15px; font-weight:600; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .lc-meta { font-size:12px; color:var(--muted); margin-top:4px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .lc-meta span { display:flex; align-items:center; gap:4px; }
+  .lc-right { display:flex; flex-direction:column; align-items:flex-end; gap:6px; flex-shrink:0; }
+  .lc-time-badge { font-family:var(--mono); font-size:12px; font-weight:500; padding:4px 10px; border-radius:20px; white-space:nowrap; }
+  .ongoing .lc-time-badge { background:var(--green-dim); color:var(--green); }
+  .upcoming_today .lc-time-badge { background:var(--blue-dim); color:var(--blue); }
+  .upcoming .lc-time-badge { background:var(--surface2); color:var(--muted); }
+
+  .active-panel { background:var(--surface); border:1.5px solid #bbf7d0; border-radius:12px; overflow:hidden; margin-bottom:20px; }
+  .active-header { background:#f0fdf4; padding:16px 20px; border-bottom:1px solid #bbf7d0; display:flex; align-items:center; justify-content:space-between; }
+  .active-title { font-size:15px; font-weight:600; color:var(--green); }
+  .active-body { padding:18px 20px; }
+  .live-stats-row { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin-bottom:18px; }
+  .ls-box { background:var(--surface2); border-radius:8px; padding:14px 16px; text-align:center; }
+  .ls-val { font-size:28px; font-weight:600; color:var(--text); line-height:1; }
+  .ls-lbl { font-size:11px; color:var(--muted); margin-top:4px; font-weight:500; text-transform:uppercase; letter-spacing:0.4px; }
+
+  .cam-indicator { display:flex; align-items:center; gap:10px; padding:12px 14px;
+    background:#f0fdf4; border:1px solid #bbf7d0; border-radius:8px; margin-bottom:14px; }
+  .cam-dot { width:10px; height:10px; background:var(--green); border-radius:50%; flex-shrink:0; animation:blink 1.2s infinite; }
+  @keyframes blink { 0%,100%{opacity:1}50%{opacity:.3} }
+  .cam-text { font-size:13px; font-weight:500; color:var(--green); }
+
+  /* Windows manual-command banner */
+  .win-banner {
+    background: #1e1a0e; border: 1.5px solid #f59e0b;
+    border-radius: 10px; padding: 14px 18px; margin-bottom: 16px;
+  }
+  .win-banner-title { font-size:13px; font-weight:600; color:#f59e0b; margin-bottom:8px; }
+  .win-banner-cmd {
+    font-family: var(--mono); font-size: 13px; color: #86efac;
+    background: #0f1a0f; padding: 10px 14px; border-radius: 6px;
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  }
+  .win-banner-copy { font-size:11px; background:#f59e0b; color:#000; border:none; border-radius:4px;
+    padding:4px 10px; cursor:pointer; font-weight:600; flex-shrink:0; }
+
+  /* Stale lecture banner */
+  .stale-banner {
+    background:#1a0f0f; border:1.5px solid var(--red);
+    border-radius:10px; padding:14px 18px; margin-bottom:16px;
+    display:flex; align-items:center; justify-content:space-between; gap:12px;
+  }
+  .stale-text { font-size:13px; color:#fca5a5; }
+  .stale-text strong { color:var(--red); }
+  .info-box { background:var(--surface2); border:1px solid var(--border); border-radius:8px;
+    padding:10px 14px; font-size:12px; color:var(--muted); text-align:center; }
+  .section-label { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:0.7px;
+    color:var(--muted); margin-bottom:10px; padding:0 2px; }
+</style>
+</head>
+<body>
+<aside class="sidebar" id="sidebar"></aside>
+<main class="main">
+  <div class="topbar">
+    <span class="topbar-title" id="page-title">Classroom View</span>
+    <div class="topbar-right">
+      <span class="live-dot">Live</span>
+      <span id="clock" style="font-family:var(--mono);font-size:12px;color:var(--muted)"></span>
+    </div>
+  </div>
+
+  <div class="page-content">
+
+    <!-- STALE LECTURE WARNING (shown when DB has active lecture but camera not running) -->
+    <div id="stale-banner" class="stale-banner" style="display:none">
+      <div class="stale-text">
+        <strong>Stale session detected.</strong> The database shows lecture #<span id="stale-id"></span>
+        as active but it was likely left over from a previous restart.
+      </div>
+      <button class="btn btn-danger" onclick="forceCloseLecture()" style="flex-shrink:0">Force Close It</button>
+    </div>
+
+    <!-- ACTIVE SESSION -->
+    <div id="active-section" style="display:none">
+
+      <!-- Windows: manual recognizer command banner -->
+      <div id="win-cmd-banner" class="win-banner" style="display:none">
+        <div class="win-banner-title">⚠ Windows: Open a NEW terminal and run this command to start the camera:</div>
+        <div class="win-banner-cmd">
+          <span id="win-cmd-text"></span>
+          <button class="win-banner-copy" onclick="copyCmd()">Copy</button>
+        </div>
+        <div style="font-size:11px;color:#d97706;margin-top:8px">
+          Keep that terminal open for the duration of the lecture. Close it or press Ctrl+C to stop the camera.
+        </div>
+      </div>
+
+      <div class="active-panel">
+        <div class="active-header">
+          <div>
+            <div class="active-title" id="active-course-name">Lecture Active</div>
+            <div style="font-size:12px;color:var(--muted);margin-top:2px" id="active-course-id"></div>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px">
+            <span class="badge good" id="active-lecture-badge">Session #–</span>
+            <button class="btn btn-danger" onclick="endLecture()" id="end-btn">End Session</button>
+          </div>
+        </div>
+        <div class="active-body">
+          <div class="cam-indicator">
+            <div class="cam-dot"></div>
+            <div>
+              <div class="cam-text" id="cam-status-text">Camera Active — Face Recognition Running</div>
+              <div style="font-size:11px;color:var(--muted);margin-top:1px" id="cam-detail">Scanning for registered students</div>
+            </div>
+          </div>
+
+          <div class="live-stats-row">
+            <div class="ls-box">
+              <div class="ls-val" id="stat-present" style="color:var(--green)">0</div>
+              <div class="ls-lbl">Present</div>
+            </div>
+            <div class="ls-box">
+              <div class="ls-val" id="stat-absent" style="color:var(--red)">0</div>
+              <div class="ls-lbl">Absent</div>
+            </div>
+            <div class="ls-box">
+              <div class="ls-val" id="stat-pct" style="color:var(--blue)">–</div>
+              <div class="ls-lbl">Attendance %</div>
+            </div>
+          </div>
+
+          <div class="panel" style="margin:0">
+            <div class="panel-header">
+              <span class="panel-title">Present Students</span>
+              <span id="present-count" class="badge good">0</span>
+            </div>
+            <div style="overflow-x:auto">
+              <table class="data-table">
+                <thead><tr><th>ID</th><th>Name</th><th>Marked At</th><th>How</th></tr></thead>
+                <tbody id="present-body">
+                  <tr><td colspan="4"><div class="empty-state"><p>Waiting for camera to detect faces…</p></div></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- UPCOMING LECTURES -->
+    <div id="upcoming-section">
+      <div id="no-upcoming" class="info-box" style="display:none;margin-bottom:16px">
+        No lectures scheduled for this classroom today.
+      </div>
+      <div id="upcoming-list"></div>
+      <div class="info-box" style="margin-top:8px;font-size:11px">
+        Tap a lecture card above to start attendance
+      </div>
+    </div>
+
+  </div>
+</main>
+
+<script src="js/api.js"></script>
+<script>
+if (localStorage.getItem('role') !== 'classroom') window.location.href = 'login.html';
+
+const classroomId = localStorage.getItem('classroom_id') || localStorage.getItem('user_id');
+const roomName    = localStorage.getItem('user_name') || classroomId;
+const building    = localStorage.getItem('building') || '';
+
+let activeLectureId  = null;
+let pollInterval     = null;
+let refreshInterval  = null;
+let isWindowsMode    = false;
+let manualCmd        = '';
+
+initSidebar('classroom', classroomId, building || 'Classroom Device', [
+  { icon: '📡', label: 'Live View', active: true, onclick: "" },
+]);
+
+startClock('clock');
+document.getElementById('page-title').textContent = classroomId + ' — Attendance';
+
+// ── INIT ──────────────────────────────────────────────────────────
+async function init() {
+  await refreshState();
+  refreshInterval = setInterval(refreshState, 30000);
+}
+
+async function refreshState() {
+  try {
+    const res = await api.get('/lecture/upcoming/' + classroomId);
+    if (res.active_lecture_id) {
+      // Check if this looks like a stale session:
+      // active_lecture_id exists but camera is NOT running and we just loaded the page
+      const appearsStale = !res.camera_active && !activeLectureId;
+      if (appearsStale) {
+        showStaleBanner(res.active_lecture_id);
+      } else {
+        hideStaleBanner();
+        activeLectureId = res.active_lecture_id;
+        await showActiveSession(res.active_lecture_id, res.camera_active);
+      }
+    } else {
+      hideStaleBanner();
+      activeLectureId = null;
+      showUpcoming(res.upcoming);
+    }
+  } catch(e) {
+    toast('Cannot reach server — ' + e.message, 'error');
+  }
+}
+
+// ── STALE LECTURE HANDLING ────────────────────────────────────────
+function showStaleBanner(lectureId) {
+  document.getElementById('stale-id').textContent = lectureId;
+  document.getElementById('stale-banner').style.display = 'flex';
+  document.getElementById('active-section').style.display = 'none';
+  document.getElementById('upcoming-section').style.display = 'none';
+}
+
+function hideStaleBanner() {
+  document.getElementById('stale-banner').style.display = 'none';
+}
+
+async function forceCloseLecture() {
+  try {
+    await api.post('/lecture/force-close/' + classroomId, {});
+    toast('Stale session closed — you can now start a new lecture', 'success');
+    hideStaleBanner();
+    activeLectureId = null;
+    await refreshState();
+  } catch(e) {
+    toast('Error: ' + e.message, 'error');
+  }
+}
+
+// ── UPCOMING LECTURE DISPLAY ──────────────────────────────────────
+function showUpcoming(lectures) {
+  document.getElementById('active-section').style.display   = 'none';
+  document.getElementById('upcoming-section').style.display = '';
+  if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
+
+  const list = document.getElementById('upcoming-list');
+
+  if (!lectures || lectures.length === 0) {
+    list.innerHTML = '';
+    document.getElementById('no-upcoming').style.display = '';
+    return;
+  }
+  document.getElementById('no-upcoming').style.display = 'none';
+
+  list.innerHTML = lectures.map(lec => {
+    const statusLabel = {
+      ongoing:        '● Ongoing now',
+      upcoming_today: '⏱ ' + formatMinutes(lec.minutes_until_start),
+      upcoming:       lec.day_of_week + ' ' + formatMinutes(lec.minutes_until_start),
+    }[lec.status] || '';
+
+    return `
+      <div class="lecture-card ${lec.status}" onclick="startLecture('${lec.course_id}', '${lec.course_name}')">
+        <div class="lc-left">
+          <div class="lc-course">${lec.course_name}</div>
+          <div class="lc-meta">
+            <span>🏷 ${lec.course_id}</span>
+            <span>🕐 ${lec.start_time} – ${lec.end_time}</span>
+            <span>📅 ${lec.day_of_week}</span>
+          </div>
+        </div>
+        <div class="lc-right">
+          <span class="lc-time-badge">${statusLabel}</span>
+          <span class="badge ${lec.status === 'ongoing' ? 'good' : lec.status === 'upcoming_today' ? 'info' : 'neutral'}">
+            ${lec.status === 'ongoing' ? 'Start Now' : lec.status === 'upcoming_today' ? 'Start Early' : 'Upcoming'}
+          </span>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+// ── START LECTURE ─────────────────────────────────────────────────
+async function startLecture(courseId, courseName) {
+  const cards = document.querySelectorAll('.lecture-card');
+  cards.forEach(c => { c.style.opacity = '0.5'; c.style.pointerEvents = 'none'; });
+
+  try {
+    const res = await api.post('/lecture/start', {
+      classroom_id: classroomId,
+      course_id: courseId,
+      force: true,
+    });
+
+    activeLectureId = res.lecture_id;
+    isWindowsMode   = res.windows_mode || false;
+    manualCmd       = res.manual_command || '';
+
+    if (isWindowsMode && manualCmd) {
+      toast('Lecture started — open a NEW terminal and run the shown command to start the camera', 'info');
+    } else {
+      toast('Attendance started — camera is active', 'success');
+    }
+
+    await showActiveSession(res.lecture_id, res.camera_started);
+  } catch(e) {
+    toast('Could not start: ' + e.message, 'error');
+    cards.forEach(c => { c.style.opacity = ''; c.style.pointerEvents = ''; });
+  }
+}
+
+// ── ACTIVE SESSION ────────────────────────────────────────────────
+async function showActiveSession(lectureId, cameraActive) {
+  document.getElementById('upcoming-section').style.display = 'none';
+  document.getElementById('active-section').style.display   = '';
+
+  // Show Windows manual-command banner if needed
+  const winBanner = document.getElementById('win-cmd-banner');
+  if (isWindowsMode && manualCmd) {
+    document.getElementById('win-cmd-text').textContent = manualCmd;
+    winBanner.style.display = '';
+  } else if (!cameraActive && isWindowsMode) {
+    // We are in Windows mode (loaded page with existing active lecture)
+    manualCmd = `python main.py recognize --classroom ${classroomId}`;
+    document.getElementById('win-cmd-text').textContent = manualCmd;
+    winBanner.style.display = '';
+  } else {
+    winBanner.style.display = 'none';
+  }
+
+  try {
+    const detail = await api.get('/lecture/' + lectureId);
+    document.getElementById('active-course-name').textContent = detail.course_name || 'Active Lecture';
+    document.getElementById('active-course-id').textContent   = detail.course_id + ' · Started ' + formatTime(detail.start_time);
+  } catch(e) {}
+
+  document.getElementById('active-lecture-badge').textContent = 'Session #' + lectureId;
+
+  if (isWindowsMode) {
+    document.getElementById('cam-status-text').textContent = 'Session Active — Camera in separate terminal';
+    document.getElementById('cam-detail').textContent = 'Run the command above in a new PowerShell window';
+  } else {
+    document.getElementById('cam-status-text').textContent = 'Camera Active — Face Recognition Running';
+    document.getElementById('cam-detail').textContent = cameraActive
+      ? 'Recognition engine running · scanning every frame'
+      : 'Camera starting up…';
+  }
+
+  await pollLive();
+  if (!pollInterval) pollInterval = setInterval(pollLive, 4000);
+}
+
+// ── POLL LIVE STATS ───────────────────────────────────────────────
+async function pollLive() {
+  if (!activeLectureId) return;
+  try {
+    const snap = await api.get('/lecture/' + activeLectureId + '/live');
+    document.getElementById('stat-present').textContent = snap.present;
+    document.getElementById('stat-absent').textContent  = snap.absent;
+    document.getElementById('stat-pct').textContent     = snap.percentage + '%';
+    document.getElementById('present-count').textContent = snap.present;
+
+    const pl = await api.get('/attendance/list/' + activeLectureId);
+    document.getElementById('present-body').innerHTML = pl.length
+      ? pl.map(p => `
+          <tr>
+            <td style="font-family:var(--mono);font-size:11px;color:var(--muted)">${p.student_id}</td>
+            <td style="font-weight:500">${p.name}</td>
+            <td style="font-family:var(--mono);font-size:11px">${formatTime(p.timestamp)}</td>
+            <td><span class="badge ${p.source === 'face_recognition' ? 'good' : 'info'}">
+              ${p.source === 'face_recognition' ? '👁 Face' : '✏ Manual'}
+            </span></td>
+          </tr>
+        `).join('')
+      : '<tr><td colspan="4"><div class="empty-state"><p>Camera scanning… no matches yet</p></div></td></tr>';
+  } catch(e) {}
+}
+
+// ── END LECTURE ───────────────────────────────────────────────────
+async function endLecture() {
+  if (!activeLectureId) return;
+  if (!confirm('End this session? Attendance will be locked and camera will stop.')) return;
+
+  document.getElementById('end-btn').disabled = true;
+  document.getElementById('end-btn').textContent = 'Ending…';
+
+  try {
+    await api.post('/lecture/end', { lecture_id: activeLectureId });
+    if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
+    activeLectureId = null;
+    isWindowsMode   = false;
+    manualCmd       = '';
+    toast('Session ended. Close the camera terminal if it is still open.', 'success');
+    await refreshState();
+  } catch(e) {
+    toast('Error: ' + e.message, 'error');
+    document.getElementById('end-btn').disabled = false;
+    document.getElementById('end-btn').textContent = 'End Session';
+  }
+}
+
+// ── HELPERS ───────────────────────────────────────────────────────
+function copyCmd() {
+  navigator.clipboard.writeText(manualCmd).then(() => toast('Command copied!', 'success'));
+}
+
+init();
+</script>
+</body>
+</html>

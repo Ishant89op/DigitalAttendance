@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AttendX — Login</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:       #f5f6fa;
+    --surface:  #ffffff;
+    --border:   #e2e5ef;
+    --border2:  #d0d4e4;
+    --blue:     #3b6ef5;
+    --blue-dim: #3b6ef514;
+    --text:     #1a1d27;
+    --text2:    #4b5068;
+    --muted:    #8b90a8;
+    --red:      #dc2626;
+    --green:    #16a34a;
+    --sans:     'Inter', sans-serif;
+    --mono:     'JetBrains Mono', monospace;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+
+  .wrap {
+    width: 100%;
+    max-width: 400px;
+    animation: up 0.4s ease both;
+  }
+
+  @keyframes up {
+    from { opacity: 0; transform: translateY(16px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .brand {
+    text-align: center;
+    margin-bottom: 28px;
+  }
+
+  .brand-icon {
+    width: 48px; height: 48px;
+    background: var(--blue);
+    border-radius: 12px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 22px;
+    margin-bottom: 12px;
+    box-shadow: 0 4px 16px rgba(59,110,245,0.25);
+  }
+
+  .brand h1 {
+    font-size: 24px;
+    font-weight: 600;
+    color: var(--text);
+    letter-spacing: -0.5px;
+  }
+
+  .brand h1 span { color: var(--blue); }
+
+  .brand p {
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 4px;
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 28px 28px 24px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06), 0 8px 32px rgba(0,0,0,0.04);
+  }
+
+  /* role tabs */
+  .tabs {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 4px;
+    background: var(--bg);
+    padding: 4px;
+    border-radius: 9px;
+    margin-bottom: 22px;
+  }
+
+  .tab {
+    padding: 7px 4px;
+    border: none;
+    background: transparent;
+    color: var(--muted);
+    font-family: var(--sans);
+    font-size: 11px;
+    font-weight: 600;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s;
+    letter-spacing: 0.2px;
+  }
+
+  .tab.active {
+    background: var(--surface);
+    color: var(--blue);
+    box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+  }
+
+  /* fields */
+  .field { margin-bottom: 14px; }
+
+  .field label {
+    display: block;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+
+  .field input {
+    width: 100%;
+    background: var(--surface);
+    border: 1px solid var(--border2);
+    border-radius: 8px;
+    padding: 10px 13px;
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+    outline: none;
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+
+  .field input:focus {
+    border-color: var(--blue);
+    box-shadow: 0 0 0 3px var(--blue-dim);
+  }
+
+  .field input::placeholder { color: var(--muted); }
+
+  .btn-login {
+    width: 100%;
+    padding: 11px;
+    background: var(--blue);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    font-family: var(--sans);
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    margin-top: 4px;
+    transition: all 0.15s;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .btn-login:hover {
+    background: #2d5de0;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 14px rgba(59,110,245,0.35);
+  }
+
+  .btn-login:active { transform: none; }
+
+  .btn-login:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+
+  .error {
+    background: #fef2f2;
+    border: 1px solid #fecaca;
+    color: var(--red);
+    border-radius: 8px;
+    padding: 10px 13px;
+    font-size: 12px;
+    margin-top: 12px;
+    display: none;
+  }
+
+  .error.show { display: block; }
+
+  .hint {
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 6px;
+    padding: 0 2px;
+  }
+
+  .footer {
+    text-align: center;
+    margin-top: 20px;
+    font-size: 11px;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+  }
+
+  .dot {
+    width: 7px; height: 7px;
+    background: var(--green);
+    border-radius: 50%;
+    animation: blink 2s infinite;
+    flex-shrink: 0;
+  }
+
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <div class="brand">
+    <div class="brand-icon">👁</div>
+    <h1>Attend<span>X</span></h1>
+    <p>Smart Face Attendance · IIIT Vadodara</p>
+  </div>
+
+  <div class="card">
+    <div class="tabs">
+      <button class="tab active" onclick="setRole('student', this)">Student</button>
+      <button class="tab" onclick="setRole('teacher', this)">Teacher</button>
+      <button class="tab" onclick="setRole('admin', this)">Admin</button>
+      <button class="tab" onclick="setRole('classroom', this)">Room</button>
+    </div>
+
+    <div class="field">
+      <label id="id-label">Student ID</label>
+      <input type="text" id="user-id" placeholder="e.g. 202411052" autocomplete="off">
+    </div>
+
+    <div class="field" id="pin-field" style="display:none">
+      <label>Room PIN</label>
+      <input type="password" id="pin" placeholder="Enter 4-digit PIN" maxlength="8">
+      <div class="hint">Default PIN is 1234 — contact admin to change</div>
+    </div>
+
+    <button class="btn-login" id="login-btn" onclick="doLogin()">Sign In</button>
+    <div class="error" id="error"></div>
+  </div>
+
+  <div class="footer">
+    <div class="dot"></div>
+    API Server · v2.0
+  </div>
+</div>
+
+<script>
+  const API = 'http://localhost:8000';
+  let currentRole = 'student';
+
+  const config = {
+    student:   { label: 'Student ID',   placeholder: 'e.g. 202411052', showPin: false },
+    teacher:   { label: 'Teacher ID',   placeholder: 'e.g. T001',      showPin: false },
+    admin:     { label: 'Admin ID',     placeholder: 'admin',           showPin: false },
+    classroom: { label: 'Classroom ID', placeholder: 'e.g. CR-2113',   showPin: true  },
+  };
+
+  function setRole(role, el) {
+    currentRole = role;
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    el.classList.add('active');
+    const c = config[role];
+    document.getElementById('id-label').textContent = c.label;
+    document.getElementById('user-id').placeholder  = c.placeholder;
+    document.getElementById('pin-field').style.display = c.showPin ? '' : 'none';
+    document.getElementById('error').classList.remove('show');
+    document.getElementById('user-id').value = '';
+    document.getElementById('pin').value = '';
+  }
+
+  async function doLogin() {
+    const id  = document.getElementById('user-id').value.trim();
+    const pin = document.getElementById('pin').value.trim();
+    const btn = document.getElementById('login-btn');
+
+    if (!id) { showErr('Please enter your ID.'); return; }
+    if (currentRole === 'classroom' && !pin) { showErr('Please enter the room PIN.'); return; }
+
+    btn.disabled = true;
+    btn.textContent = 'Verifying…';
+    clearErr();
+
+    try {
+      if (currentRole === 'student') {
+        const list = await get('/admin/students');
+        const found = list.find(s => s.student_id === id);
+        if (!found) { showErr('Student ID not found.'); return; }
+        save('student', id, found.name);
+        go('student.html');
+
+      } else if (currentRole === 'teacher') {
+        const list = await get('/admin/teachers');
+        const found = list.find(t => t.teacher_id === id);
+        if (!found) { showErr('Teacher ID not found.'); return; }
+        save('teacher', id, found.name);
+        go('teacher.html');
+
+      } else if (currentRole === 'admin') {
+        if (id !== 'admin') { showErr('Invalid admin credentials.'); return; }
+        save('admin', id, 'Administrator');
+        go('admin.html');
+
+      } else if (currentRole === 'classroom') {
+        // Call classroom login endpoint
+        const res = await post('/lecture/classroom-login', { classroom_id: id, pin });
+        localStorage.setItem('role',         'classroom');
+        localStorage.setItem('user_id',      id);
+        localStorage.setItem('user_name',    res.room_number || id);
+        localStorage.setItem('classroom_id', id);
+        localStorage.setItem('building',     res.building || '');
+        go('classroom.html');
+      }
+    } catch(e) {
+      showErr(e.message || 'Cannot reach API. Is the server running?');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Sign In';
+    }
+  }
+
+  async function get(path) {
+    const r = await fetch(API + path);
+    if (!r.ok) { const e = await r.json().catch(()=>{}); throw new Error(e?.detail || 'Request failed'); }
+    return r.json();
+  }
+
+  async function post(path, body) {
+    const r = await fetch(API + path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) { const e = await r.json().catch(()=>{}); throw new Error(e?.detail || 'Request failed'); }
+    return r.json();
+  }
+
+  function save(role, id, name) {
+    localStorage.setItem('role', role);
+    localStorage.setItem('user_id', id);
+    localStorage.setItem('user_name', name);
+  }
+
+  function go(page) { window.location.href = page; }
+
+  function showErr(msg) {
+    const e = document.getElementById('error');
+    e.textContent = msg;
+    e.classList.add('show');
+    document.getElementById('login-btn').disabled = false;
+    document.getElementById('login-btn').textContent = 'Sign In';
+  }
+
+  function clearErr() {
+    document.getElementById('error').classList.remove('show');
+  }
+
+  document.addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+</script>
+</body>
+</html>
