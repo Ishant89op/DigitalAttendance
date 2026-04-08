@@ -1,837 +1,830 @@
-# Digital Attendance System
+# AttendX — Smart Digital Attendance System
 
-A modern, intelligent biometric attendance management platform leveraging facial recognition technology for academic institutions. This system automates attendance recording while providing real-time analytics, class management, and administrative oversight.
+> Biometric face-recognition attendance platform for universities.  
+> Designed for multi-classroom deployment with a FastAPI backend, PostgreSQL database,  
+> InsightFace recognition engine, and a browser-based UI for admins, teachers, and students.
 
 ---
 
 ## Table of Contents
 
-- [Overview](#overview)
-- [Key Features](#key-features)
-- [Technology Stack](#technology-stack)
-- [System Architecture](#system-architecture)
-- [Project Structure](#project-structure)
-- [Installation & Setup](#installation--setup)
-- [Configuration](#configuration)
-- [Running the Application](#running-the-application)
-- [API Endpoints](#api-endpoints)
-- [Database Schema](#database-schema)
-- [User Roles & Capabilities](#user-roles--capabilities)
-- [Workflows](#workflows)
-- [Troubleshooting](#troubleshooting)
-- [License](#license)
+1. [What the System Does](#1-what-the-system-does)
+2. [Architecture Overview](#2-architecture-overview)
+3. [Project Structure](#3-project-structure)
+4. [Database Schema](#4-database-schema)
+5. [How Attendance Works — End to End](#5-how-attendance-works--end-to-end)
+6. [API Reference](#6-api-reference)
+7. [Frontend Pages](#7-frontend-pages)
+8. [Configuration & Environment](#8-configuration--environment)
+9. [Setup & Installation](#9-setup--installation)
+10. [CSV Data Formats](#10-csv-data-formats)
+11. [Face Registration Workflow](#11-face-registration-workflow)
+12. [Recognition Engine Deep Dive](#12-recognition-engine-deep-dive)
+13. [Analytics System](#13-analytics-system)
+14. [Known Bugs & Current Issues](#14-known-bugs--current-issues)
+15. [Planned Enhancements](#15-planned-enhancements)
+16. [Seed / Demo Data](#16-seed--demo-data)
+17. [Key Design Decisions](#17-key-design-decisions)
 
 ---
 
-## Overview
+## 1. What the System Does
 
-The **Digital Attendance System** is a comprehensive biometric-based solution designed to streamline attendance management in academic institutions. It replaces traditional paper-based or manual digital attendance with an automated, secure system that leverages computer vision and facial recognition technology.
+AttendX automates classroom attendance for institutions using real-time face recognition. Here is the full user journey:
 
-The platform provides:
-- **Automated attendance marking** via facial recognition from webcam captures
-- **Real-time monitoring** and analytics for instructors and administrators
-- **Subject-wise attendance tracking** with percentage calculations
-- **Multi-layer access control** with role-based dashboards
-- **Data persistence** using SQLite with structured relational schemas
-- **REST API** for seamless frontend-backend communication
+**Admin (one-time setup)**
+- Uploads student, teacher, course, classroom, and schedule data via CSV files or directly in the Admin Panel.
+- Opens a face registration window at the start of a semester. Students walk up, enter their ID, and the camera captures 20 face samples to build a biometric profile.
 
----
+**Classroom device (per-lecture, ~2 minutes)**
+- Any device (laptop, tablet) placed in the classroom logs in.
+- The system suggests the next scheduled lecture for that room automatically.
+- The teacher (or device itself) presses "Start Attendance."
+- A background camera process launches, reads faces, and marks attendance in real time.
+- Up to 4 devices can be active in the same classroom simultaneously; they all write to the same lecture session.
+- After class, "End Session" closes the lecture and stops the camera.
 
-## Key Features
+**Teacher**
+- Views a live dashboard showing who is present and who is absent during the lecture.
+- Can manually override any attendance record (mark present or absent).
+- Sees per-course analytics: average attendance percentages across all lectures they have taught.
 
-### 🔐 **Face Recognition & Registration**
-- Biometric enrollment using facial encodings (dlib-based)
-- Multi-sample capture for robust face matching
-- Real-time face detection using MediaPipe
-- Confidence scoring with distance-based matching
-- Recognition buffer to reduce false positives (3-frame confirmation)
+**Student**
+- Sees their personal attendance summary: overall percentage and per-subject breakdown.
+- Receives visual warnings when their percentage falls below the institution's threshold (default 75%).
+- Can view their full attendance history filtered by subject or date range.
 
-### 📊 **Attendance Management**
-- Automated attendance marking during live sessions
-- Manual attendance override capability for instructors
-- Course-wise and student-wise attendance tracking
-- Timestamped records for audit trails
-- Attendance history and analytics per student
-
-### 📈 **Analytics & Reporting**
-- Individual student attendance percentage and statistics
-- Class-level attendance summaries
-- Subject-wise attendance distributions
-- Real-time progress monitoring
-
-### 🎓 **Role-Based Access Control**
-- **Admin**: Institutional data management, user management, system configuration
-- **Teacher/Faculty**: Course management, attendance sessions, student monitoring
-- **Student**: Self-service registration, attendance marking, personal analytics
-
-### 💻 **User Interface**
-- Responsive web dashboard with HTML/CSS/JavaScript
-- Role-specific views (Student, Teacher, Admin)
-- Interactive charts for attendance visualization (Chart.js)
-- Login authentication system
-
-### 🔄 **API-Driven Architecture**
-- FastAPI-based REST API
-- CORS-enabled for cross-origin requests
-- Modular, extensible design
-- JSON request/response format
+**Admin (ongoing)**
+- Views the system-wide dashboard: total students, attendance rates by department/semester.
+- Receives alerts for students below the threshold across any subject.
+- Browses the full audit log of every attendance mark and override.
 
 ---
 
-## Technology Stack
-
-| Layer | Technology |
-|-------|-----------|
-| **Backend** | Python 3.10–3.12 |
-| **API Framework** | FastAPI, Uvicorn |
-| **Computer Vision** | OpenCV, face_recognition (dlib), MediaPipe |
-| **Database** | SQLite |
-| **Data Validation** | Pydantic |
-| **Frontend** | HTML5, CSS3, JavaScript (ES6+) |
-| **Visualization** | Chart.js |
-| **Scientific Computing** | NumPy |
-
-### Key Dependencies
-- **face_recognition**: dlib-based facial encoding and matching
-- **opencv-python**: Image processing and webcam capture
-- **mediapipe**: Face detection and localization
-- **fastapi**: Modern async web framework
-- **pydantic**: Data validation and serialization
-- **uvicorn**: ASGI application server
-
----
-
-## System Architecture
-
-The system follows a **layered, modular architecture**:
+## 2. Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────┐
-│          Web Dashboard (HTML/JS/CSS)                │
-│  (Student View | Teacher View | Admin Panel)        │
-└──────────────────────┬──────────────────────────────┘
-                       │
-┌──────────────────────▼──────────────────────────────┐
-│      REST API (FastAPI Server on Port 8000)         │
-│  (/login, /attendance/mark, /analytics/*, /students)
-└──────────────────────┬──────────────────────────────┘
-                       │
-        ┌──────────────┼──────────────┐
-        │              │              │
-┌───────▼────────┐ ┌──▼─────────┐ ┌─▼────────────────┐
-│ Attendance     │ │ Recognition│ │ Registration     │
-│ Manager        │ │ Engine     │ │ Engine (Student) │
-│ (mark/update)  │ │ (face eval)│ │ (enrollment)     │
-└───────┬────────┘ └──┬─────────┘ └─┬────────────────┘
-        │             │             │
-        └─────────────┼─────────────┘
-                      │
-        ┌─────────────▼──────────────┐
-        │   SQLite Database          │
-        │  (users, students,         │
-        │   courses, attendance)     │
-        └────────────────────────────┘
-
-        ┌─────────────────────────────┐
-        │  Webcam / Camera Input      │
-        │  (Face Capture)             │
-        └─────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                          Browser (UI)                            │
+│  login.html  ·  admin.html  ·  teacher.html  ·  student.html    │
+└────────────────────────────┬────────────────────────────────────┘
+                             │  HTTP / REST (localhost:8000)
+┌────────────────────────────▼────────────────────────────────────┐
+│                     FastAPI Backend (api/server.py)              │
+│                                                                  │
+│  /lecture    /attendance    /analytics    /admin                 │
+│                                                                  │
+│  Lifespan hooks:                                                 │
+│    startup  → init DB pool → run schema migrations               │
+│    shutdown → stop all recognition processes → close pool        │
+└───────┬──────────────────────────┬──────────────────────────────┘
+        │                          │
+┌───────▼──────────┐   ┌───────────▼──────────────────────────────┐
+│  Services layer  │   │  Recognition Manager                      │
+│                  │   │  (core/recognition_manager.py)            │
+│  lecture_service │   │                                           │
+│  schedule_service│   │  Spawns one subprocess per classroom      │
+│  analytics_svc   │   │  when a lecture starts.                   │
+│  csv_service     │   │  Kills it when the lecture ends.          │
+└───────┬──────────┘   └───────────┬──────────────────────────────┘
+        │                          │ asyncio.create_subprocess_exec
+┌───────▼──────────────────────────▼──────────────────────────────┐
+│                         PostgreSQL 14+                           │
+│  asyncpg connection pool (min=2, max=10)                        │
+│  All queries use $1 $2 ... positional placeholders              │
+└─────────────────────────────────────────────────────────────────┘
+        ▲
+        │  (separate OS process per classroom)
+┌───────┴──────────────────────────────────────────────────────────┐
+│              Recognition Engine  (recognition/recognizer.py)      │
+│                                                                   │
+│  cv2.VideoCapture(0)  →  InsightFace buffalo_l                   │
+│  →  cosine similarity match  →  3-frame buffer  →  mark_attendance│
+│  Reloads face DB from PostgreSQL every 60 seconds                │
+│  Processes up to 6 faces per frame                               │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
-### Data Flow
-
-1. **Registration**: Student captures 20 facial samples → Encodings stored in database
-2. **Attendance**: Webcam feed → Face recognition → Database record → API response
-3. **Analytics**: Query database → Calculate statistics → Return to dashboard
-4. **Authorization**: Login credentials → User role determination → Dashboard access
+**Why subprocesses for the camera?**  
+The camera loop is a blocking, CPU-bound operation. Running it inside the FastAPI async event loop would freeze the entire API. A separate OS process keeps the API fully responsive and allows multiple classrooms to run cameras concurrently without interfering with each other.
 
 ---
 
-## Project Structure
+## 3. Project Structure
 
 ```
 DigitalAttendance/
 │
-├── src/                                    # Core application code
-│   ├── main.py                            # CLI entry point (database init, user creation)
-│   ├── create_admin.py                    # Admin user creation script
-│   │
-│   ├── api/
-│   │   ├── __init__.py
-│   │   └── server.py                      # FastAPI application & endpoints
-│   │
-│   ├── database/
-│   │   ├── __init__.py
-│   │   └── database.py                    # SQLite initialization & connection management
-│   │
-│   ├── attendance/
-│   │   ├── __init__.py
-│   │   └── attendance_manager.py          # Attendance marking & record management
-│   │
-│   ├── recognition/
-│   │   ├── __init__.py
-│   │   └── recognizer_v2.py               # Face recognition engine with CV2 & dlib
-│   │
-│   ├── registration/
-│   │   ├── __init__.py
-│   │   └── register_student_v2.py         # Student enrollment with facial encoding
-│   │
-│   ├── services/
-│   │   ├── __init__.py
-│   │   ├── csv_service.py                 # CSV import/export utilities
-│   │   ├── lecture_service.py             # Lecture scheduling
-│   │   └── schedule_service.py            # Schedule management
-│   │
-│   └── utils/
-│       ├── __init__.py
-│       └── face_loader.py                 # Load & cache facial encodings
+├── main.py                         CLI entry point (db / register / recognize / server)
+├── requirements.txt
+├── .env                            Environment variables (DB credentials, CLASSROOM_ID)
+├── seed.sql                        Demo data for CSE Sem-4 timetable (IIIT Vadodara)
 │
-├── dashboard/                             # Web frontend
-│   ├── index.html                         # Login portal
-│   ├── student.html                       # Student dashboard view
-│   ├── teacher.html                       # Teacher dashboard view
-│   ├── admin.html                         # Administrator panel
-│   │
-│   ├── css/
-│   │   └── style.css                      # Global styling (responsive design)
-│   │
-│   └── js/
-│       ├── app.js                         # Main application controller
-│       ├── charts.js                      # Chart.js utilities for visualization
-│       ├── login.js                       # Authentication logic
-│       ├── student.js                     # Student-specific interactions
-│       └── teacher.js                     # Teacher-specific interactions
+├── config/
+│   └── settings.py                 All tuneable constants in frozen dataclasses
+│                                   DatabaseSettings · RecognitionSettings · APISettings
+│                                   AnalyticsSettings
 │
-├── docs/
-│   └── face_rec.md                        # Technical system specification
+├── core/
+│   ├── database.py                 asyncpg pool init/close, get_conn(), transaction()
+│   └── recognition_manager.py      spawn / kill recognition subprocesses per classroom
 │
-├── face_recognition/                      # Original/legacy source code
-│   ├── main.py
-│   ├── __pycache__/
-│   ├── api/
-│   ├── attendance/
-│   ├── database/
-│   ├── recognition/
-│   ├── registration/
-│   ├── services/
-│   └── utils/
+├── migrations/
+│   └── schema.py                   Idempotent DDL — CREATE TABLE IF NOT EXISTS for all tables
+│                                   Run automatically at API startup
 │
-├── requirements.txt                       # Python dependencies
-├── LICENSE                                # License file
-└── README.md                              # This file
+├── api/
+│   ├── server.py                   FastAPI app · CORS · lifespan · router registration
+│   └── routers/
+│       ├── lecture.py              POST /lecture/start|end  GET /lecture/active/{id}
+│       ├── attendance.py           POST /attendance/mark|override  GET /attendance/list
+│       ├── analytics.py            GET /analytics/student|teacher|admin
+│       └── admin.py                CRUD endpoints + CSV bulk upload + audit log
+│
+├── services/
+│   ├── lecture_service.py          start_lecture() / end_lecture() / get_active_lecture()
+│   ├── schedule_service.py         get_current_course() — time-based schedule lookup
+│   ├── analytics_service.py        All reporting SQL (student summary, teacher stats,
+│   │                               admin dashboard, low-attendance alerts, live snapshot)
+│   └── csv_service.py              Transactional CSV import for all 5 entity types
+│
+├── attendance/
+│   └── attendance_manager.py       mark_attendance() · manual_override()
+│                                   Both paths write to audit_log
+│
+├── recognition/
+│   └── recognizer.py               Camera loop · InsightFace · cosine match
+│                                   Frame buffer · cooldown · auto-start lecture
+│
+├── registration/
+│   └── register_student.py         Admin-first face capture (terminal, headless)
+│                                   Captures 20 samples → averages → saves BYTEA
+│
+├── utils/
+│   └── face_utils.py               InsightFace model singleton · load_known_faces()
+│                                   normalize() · cosine_match()
+│
+└── ui/
+    ├── login.html                  Role-selector login page (admin / teacher / student)
+    ├── admin.html                  CSV upload + data management panel
+    ├── teacher.html                Live lecture control + attendance dashboard
+    ├── student.html                Personal attendance summary
+    ├── css/
+    │   └── dashboard.css           Shared dark-theme design system
+    └── js/
+        └── api.js                  Shared API helper functions
 ```
 
 ---
 
-## Installation & Setup
+## 4. Database Schema
 
-### Prerequisites
+All tables are created idempotently in `migrations/schema.py` at every server startup.
 
-- **Python 3.10, 3.11, or 3.12** (3.13+ not supported due to dlib/face_recognition)
-- **Windows, macOS, or Linux** with Python environment manager support
-- **Webcam** for facial registration and recognition
-- **pip** or **conda** for package management
+### `users`
+Authentication table for login. Linked optionally to students/teachers via `user_id`.
 
-> ⚠️ **Important**: The `face-recognition` and `dlib` libraries do not yet support Python 3.13+. Ensure you use Python 3.10–3.12.
+| Column | Type | Notes |
+|---|---|---|
+| id | TEXT PK | gen_random_uuid() |
+| name | TEXT | |
+| email | TEXT UNIQUE | |
+| role | TEXT | `admin` · `teacher` · `student` |
+| password_hash | TEXT | |
+| created_at | TIMESTAMPTZ | |
 
-### Step 1: Clone / Extract Repository
+### `students`
+| Column | Type | Notes |
+|---|---|---|
+| student_id | TEXT PK | e.g. `202411090` |
+| user_id | TEXT FK → users | Optional login link |
+| name | TEXT | |
+| email | TEXT | |
+| department | TEXT | e.g. `CSE` |
+| semester | INTEGER | 1–12 |
+| face_encoding | BYTEA | 512-dim float32 vector, NULL until registered |
+| registered_at | TIMESTAMPTZ | NULL until face captured |
 
-```bash
-cd DigitalAttendance
-```
+Index: `(semester, department)` — used by analytics JOIN.
 
-### Step 2: Create Virtual Environment
+### `teachers`
+| Column | Type | Notes |
+|---|---|---|
+| teacher_id | TEXT PK | e.g. `T001` |
+| user_id | TEXT FK → users | |
+| name | TEXT | |
+| email | TEXT | |
+| department | TEXT | |
 
-```bash
-# Using Python 3.12 (recommended)
-python -m venv venv
+### `classrooms`
+| Column | Type | Notes |
+|---|---|---|
+| classroom_id | TEXT PK | e.g. `CR-2113`, `CR-LAB` |
+| room_number | TEXT | |
+| building | TEXT | |
+| capacity | INTEGER | |
 
-# Or with explicit path
-"C:\...\Python312\python.exe" -m venv venv
-```
+### `courses`
+| Column | Type | Notes |
+|---|---|---|
+| course_id | TEXT PK | e.g. `CS401` |
+| course_name | TEXT | |
+| department | TEXT | |
+| semester | INTEGER | |
+| credits | INTEGER | default 3 |
 
-### Step 3: Activate Virtual Environment
+Index: `(semester, department)`.
 
-**Windows (PowerShell):**
-```powershell
-.\venv\Scripts\Activate.ps1
-```
+### `course_teachers`
+Junction table: which teacher teaches which course.
 
-**Windows (CMD):**
-```cmd
-venv\Scripts\activate.bat
-```
+| Column | Type |
+|---|---|
+| id | SERIAL PK |
+| course_id | TEXT FK → courses |
+| teacher_id | TEXT FK → teachers |
 
-**macOS/Linux:**
-```bash
-source venv/bin/activate
-```
+UNIQUE `(course_id, teacher_id)`.
 
-### Step 4: Install dlib Pre-built Wheel
+### `weekly_schedule`
+The timetable. One row per course-classroom-day-time slot.
 
-> ⚠️ **Critical**: Install dlib before other dependencies to avoid C++ compiler requirement.
+| Column | Type | Notes |
+|---|---|---|
+| schedule_id | SERIAL PK | |
+| course_id | TEXT FK → courses | |
+| classroom_id | TEXT FK → classrooms | |
+| day_of_week | TEXT | `Monday` … `Sunday` |
+| start_time | TIME | e.g. `09:00` |
+| end_time | TIME | e.g. `10:30` |
 
-```bash
-pip install https://github.com/z-mahmud22/Dlib_Windows_Python3.x/raw/main/dlib-19.24.99-cp312-cp312-win_amd64.whl
-```
+Constraint: `end_time > start_time`.  
+Index: `(classroom_id, day_of_week)` — used by schedule lookup every frame.
 
-### Step 5: Install Face Recognition Models
+### `lecture_sessions`
+One row per actual class held. Created when lecture starts, updated when it ends.
 
-```bash
-pip install git+https://github.com/ageitgey/face_recognition_models
-```
+| Column | Type | Notes |
+|---|---|---|
+| lecture_id | SERIAL PK | |
+| course_id | TEXT FK → courses | |
+| classroom_id | TEXT FK → classrooms | |
+| teacher_id | TEXT FK → teachers | nullable |
+| status | TEXT | `active` · `closed` |
+| start_time | TIMESTAMPTZ | |
+| end_time | TIMESTAMPTZ | nullable until closed |
 
-### Step 6: Install Remaining Dependencies
+⚠️ **Known bug:** `UNIQUE (classroom_id, status) DEFERRABLE` — this constraint inadvertently limits a classroom to a single `closed` lecture ever. See [Known Bugs](#14-known-bugs--current-issues).
 
-```bash
-pip install -r requirements.txt
-```
+### `attendance`
+One row per student per lecture (presence record).
 
-### Step 7: Initialize Database
+| Column | Type | Notes |
+|---|---|---|
+| id | BIGSERIAL PK | |
+| lecture_id | INTEGER FK → lecture_sessions | |
+| student_id | TEXT FK → students | |
+| timestamp | TIMESTAMPTZ | when marked |
+| source | TEXT | `face_recognition` · `manual_override` |
+| marked_by | TEXT | teacher_id if manual |
 
-```bash
-cd src
-python main.py
-```
+UNIQUE `(student_id, lecture_id)` — prevents duplicate marks.  
+Indexes: `(lecture_id)`, `(student_id)`, `(timestamp)`.
 
-Select the menu options:
-- Option 1: Initialize Database
-- Option 2: Create Default Teacher
+### `audit_log`
+Immutable event trail. Every attendance mark and override writes here.
 
-### Step 8: Create Admin User
-
-```bash
-python create_admin.py
-```
-
-This will create an admin account for system administration.
-
-### Step 9: Verify Installation
-
-```bash
-pip list
-```
-
-Ensure all packages from `requirements.txt` are installed.
-
----
-
-## Configuration
-
-### Database Configuration
-
-The database is configured in [src/database/database.py](src/database/database.py):
-
-```python
-DB_NAME = "attendance_system.db"  # SQLite database file
-```
-
-To reset the database:
-```bash
-cd src
-rm attendance_system.db  # or delete on Windows
-python main.py  # Select "Initialize Database"
-```
-
-### Camera Configuration
-
-In [src/recognition/recognizer_v2.py](src/recognition/recognizer_v2.py):
-- Camera index: `cv2.VideoCapture(0)` (default webcam)
-- Frame downscaling: 25% for faster processing
-- Face detection confidence threshold: 0.45 (distance-based)
-- Recognition buffer: 3-frame confirmation to reduce false positives
-
-### API Configuration
-
-Server runs on **http://localhost:8000** by default with uvicorn.
-
-Enable CORS for frontend requests (already configured in [src/api/server.py](src/api/server.py)).
-
-### Role Configuration
-
-Default credentials (change after first login):
-
-| Role | User ID | Password | Created By |
-|------|---------|----------|-----------|
-| Teacher | `teacher1` | `1234` | main.py |
-| Admin | `admin1` | `1234` | create_admin.py |
+| Column | Type | Notes |
+|---|---|---|
+| log_id | BIGSERIAL PK | |
+| event_type | TEXT | `attendance_marked` · `manual_override` · `face_registered` |
+| actor_id | TEXT | who did it |
+| target_id | TEXT | affected student/entity |
+| detail | JSONB | extra context (lecture_id, source, ts…) |
+| created_at | TIMESTAMPTZ | |
 
 ---
 
-## Running the Application
+## 5. How Attendance Works — End to End
 
-### Terminal 1: Start FastAPI Server
+### Step 1 — Schedule resolution
+When a lecture is started, `schedule_service.get_current_course(classroom_id)` queries `weekly_schedule` for a row matching the current `day_of_week` and `current_time BETWEEN start_time AND end_time`. Returns the `course_id` or `None`.
 
-```bash
-cd src
-uvicorn api.server:app --reload
+### Step 2 — Lecture session creation
+`lecture_service.start_lecture()` resolves course_id (from schedule, or passed explicitly), checks no lecture is already active for that room, and inserts a row into `lecture_sessions` with `status = 'active'`.
+
+### Step 3 — Recognition process spawn
+`core/recognition_manager.start_recognition_process(classroom_id)` spawns a subprocess running `python main.py recognize --classroom <id>`. The subprocess inherits environment variables including `CLASSROOM_ID`.
+
+### Step 4 — Camera loop (inside the subprocess)
+The recognizer (`recognition/recognizer.py`) runs the following loop at ~25 fps:
+
+```
+1. Reload face embeddings from DB (every 60 seconds)
+2. Check get_active_lecture(classroom_id) → lecture_id
+3. Read a frame from cv2.VideoCapture(0)
+4. Run InsightFace model.get(frame) → list of detected faces
+5. Sort faces by area (largest first), take top 6
+6. For each face:
+   a. cosine_match(embedding, known_matrix) → (idx, score)
+   b. If score ≥ 0.50 threshold: increment frame_buffer[student_id]
+   c. If frame_buffer[student_id] ≥ 3 consecutive frames AND not on 30s cooldown:
+      → mark_attendance(student_id, lecture_id)
+      → reset frame_buffer[student_id]
+      → set last_seen[student_id] = now
 ```
 
-Output:
-```
-INFO:     Uvicorn running on http://127.0.0.1:8000
-INFO:     Application startup complete
-```
+The 3-frame buffer prevents false positives from a passing face. The 30-second cooldown prevents the same student being marked multiple times in one session.
 
-### Terminal 2: Start Web Dashboard
+### Step 5 — Attendance record
+`attendance_manager.mark_attendance()` inserts into `attendance` with `source = 'face_recognition'` and writes to `audit_log`. Duplicate marks are silently ignored via the UNIQUE constraint.
 
-```bash
-cd dashboard
-python -m http.server 5500
-```
-
-Output:
-```
-Serving HTTP on 0.0.0.0 port 5500 (http://0.0.0.0:5500/) ...
-```
-
-### Terminal 3: Optional - Start Recognition Engine
-
-```bash
-cd src
-python -m recognition.recognizer_v2
-```
-
-### Access the Application
-
-Open your browser to:
-```
-http://localhost:5500
-```
-
-Login with default credentials based on your role.
+### Step 6 — End session
+Teacher clicks "End Session" → `POST /lecture/end` → `lecture_service.end_lecture()` sets `status = 'closed'` → `recognition_manager.stop_recognition_process()` terminates the subprocess.
 
 ---
 
-## API Endpoints
+## 6. API Reference
 
-All endpoints return JSON responses. Base URL: `http://localhost:8000`
+All endpoints are available with interactive documentation at `http://localhost:8000/docs`.
 
-### Authentication
+### Lecture
 
-#### `POST /login`
-**Description**: Authenticate user and retrieve role information
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/lecture/start` | Start lecture + spawn camera process |
+| POST | `/lecture/end` | End lecture + stop camera |
+| GET | `/lecture/active/{classroom_id}` | Active lecture ID for a room |
+| GET | `/lecture/{lecture_id}` | Full lecture detail + attendance count |
+| GET | `/lecture/{lecture_id}/live` | Real-time present/absent snapshot |
 
-**Request:**
+**POST /lecture/start — request body:**
 ```json
 {
-  "id": "teacher1",
-  "password": "1234"
+  "classroom_id": "CR-2113",
+  "course_id": null,
+  "teacher_id": "T001",
+  "force": true
 }
 ```
+If `course_id` is `null`, the system auto-detects from schedule. If `force: true` and no scheduled course exists right now, it falls back to any course linked to this classroom.
 
-**Response (Success):**
+### Attendance
+
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/attendance/mark` | Mark attendance (called by face rec engine) |
+| POST | `/attendance/override` | Teacher manual override |
+| GET | `/attendance/count/{lecture_id}` | Count of present students |
+| GET | `/attendance/list/{lecture_id}` | Full list of present students |
+
+**POST /attendance/override — request body:**
 ```json
 {
-  "id": "teacher1",
-  "name": "Teacher One",
-  "role": "teacher"
+  "student_id": "202411090",
+  "lecture_id": 42,
+  "teacher_id": "T001",
+  "present": true
 }
 ```
-
-**Response (Error):**
-```json
-{
-  "error": "User not found" | "Incorrect password"
-}
-```
-
----
-
-### Attendance Management
-
-#### `POST /attendance/mark`
-**Description**: Manually mark attendance for a student in a course
-
-**Request:**
-```json
-{
-  "student_id": "STU001",
-  "course_id": "CS101",
-  "status": "present"
-}
-```
-
-**Response:**
-```json
-{
-  "message": "Attendance marked"
-}
-```
-
-**Status Values**: `present`, `absent`, `late`
-
----
+`present: false` deletes the attendance record (marks absent).
 
 ### Analytics
 
-#### `GET /analytics/student/{student_id}`
-**Description**: Get attendance statistics for a specific student
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `/analytics/student/{student_id}` | Overall % + per-subject breakdown |
+| GET | `/analytics/student/{student_id}/history` | Full history (filter by course/date) |
+| GET | `/analytics/teacher/{teacher_id}` | Teacher's course stats |
+| GET | `/analytics/admin/dashboard` | System-wide summary |
+| GET | `/analytics/admin/alerts` | Students below threshold |
 
-**Response:**
-```json
-{
-  "student_id": "STU001",
-  "total_classes": 25,
-  "present": 23,
-  "attendance_percentage": 92.0
-}
+### Admin
+
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/admin/students` | Add single student |
+| GET | `/admin/students` | List students (filter: department, semester) |
+| POST | `/admin/teachers` | Add single teacher |
+| GET | `/admin/teachers` | List teachers |
+| POST | `/admin/courses` | Add single course |
+| GET | `/admin/courses` | List courses |
+| POST | `/admin/classrooms` | Add classroom |
+| GET | `/admin/schedule/{classroom_id}` | Get classroom timetable |
+| POST | `/admin/schedule` | Add schedule entry |
+| POST | `/admin/upload/students` | Bulk CSV import |
+| POST | `/admin/upload/teachers` | Bulk CSV import |
+| POST | `/admin/upload/courses` | Bulk CSV import |
+| POST | `/admin/upload/schedule` | Bulk CSV import |
+| POST | `/admin/upload/course-teachers` | Bulk CSV import |
+| GET | `/admin/audit-log` | Recent audit entries (default: last 100) |
+
+---
+
+## 7. Frontend Pages
+
+All pages are served as static HTML from `ui/`. They call the FastAPI backend directly via `fetch()`.
+
+### `login.html`
+Dark-theme role selector. Three login paths: Admin, Teacher, Student. Animates on load. Redirects to the appropriate dashboard on success.
+
+### `admin.html`
+Admin panel with:
+- CSV file upload widgets for all 5 entity types (students, teachers, courses, schedule, course-teachers). Each shows inserted/skipped counts after import.
+- Lists of all students, teachers, courses filtered by department/semester.
+- Audit log viewer.
+
+### `teacher.html`
+Live lecture control panel with:
+- Classroom selector dropdown (currently hardcoded: CR-2113, CR-LAB).
+- Course selector (auto-detect or manual).
+- "Start Attendance" / "End Session" buttons.
+- Live statistics cards: Present · Absent · Attendance % · Enrolled.
+- Two live tables: present students (with timestamp + source) and absent students (with manual override button).
+- Course statistics tab with historical per-course averages.
+
+### `student.html`
+Personal attendance dashboard:
+- Overall attendance percentage with status ring.
+- Per-subject cards showing attended / total / percentage with status colour coding (good / warning / critical).
+- Attendance history table.
+
+### `css/dashboard.css`
+Shared design system used by teacher and student pages. Dark background (`#080c14`), cyan accent (`#00d4ff`), green for success, amber for warning, red for danger. Space Mono for mono elements, DM Sans for body text.
+
+### `js/api.js`
+Shared helper module. Provides `apiFetch(path, options)` wrapper that prepends the backend base URL and handles JSON parsing. All pages import this.
+
+---
+
+## 8. Configuration & Environment
+
+All settings live in `config/settings.py` as frozen dataclasses loaded at import time.
+
+### `.env` file (copy from `.env.example`)
+
+```env
+# PostgreSQL connection
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=attendance_system
+DB_USER=postgres
+DB_PASSWORD=your_password_here
+
+# Per-device: set before running recognizer
+CLASSROOM_ID=CR-2113
 ```
 
----
+### `config/settings.py` — tuneable constants
 
-#### `GET /analytics/class/{course_id}`
-**Description**: Get real-time attendance summary for a course
-
-**Response:**
-```json
-{
-  "course_id": "CS101",
-  "present_today": 18,
-  "absent_today": 7
-}
-```
-
----
-
-### Data Retrieval
-
-#### `GET /students`
-**Description**: Retrieve list of all registered students
-
-**Response:**
-```json
-[
-  {
-    "student_id": "STU001",
-    "user_id": "user1"
-  },
-  {
-    "student_id": "STU002",
-    "user_id": "user2"
-  }
-]
-```
+| Setting | Default | Description |
+|---|---|---|
+| `recog.model_name` | `buffalo_l` | InsightFace model pack |
+| `recog.det_size` | `(640, 640)` | Face detection resolution |
+| `recog.ctx_id` | `-1` | `-1` = CPU, `0` = first GPU |
+| `recog.similarity_threshold` | `0.50` | Minimum cosine similarity to accept a match |
+| `recog.cooldown_seconds` | `30` | Seconds before same student can be marked again |
+| `recog.max_faces_per_frame` | `6` | Maximum faces processed per frame |
+| `recog.samples_required` | `20` | Samples captured during registration |
+| `recog.embedding_dim` | `512` | InsightFace embedding dimensions |
+| `analytics.low_attendance_threshold` | `75.0` | % below which warning fires |
+| `analytics.critical_threshold` | `60.0` | % below which critical alert fires |
+| `db.pool_min` | `2` | Minimum DB connections |
+| `db.pool_max` | `10` | Maximum DB connections |
 
 ---
 
-#### `GET /`
-**Description**: Health check endpoint
+## 9. Setup & Installation
 
-**Response:**
-```json
-{
-  "message": "Attendance API running"
-}
-```
+### Prerequisites
+- Python 3.12 recommended
+- PostgreSQL 14+
+- A webcam (for recognition and registration terminals)
+- Git
 
----
+### Installation
 
-## Database Schema
-
-### users Table
-Stores system user accounts (students, teachers, admins).
-
-| Column | Type | Constraint | Description |
-|--------|------|-----------|------------|
-| `id` | TEXT | PRIMARY KEY | Unique user identifier |
-| `name` | TEXT | NOT NULL | User's full name |
-| `role` | TEXT | NOT NULL | Role: student, teacher, admin |
-| `password` | TEXT | — | User's password (plaintext in demo) |
-
----
-
-### students Table
-Biometric enrollment data for students.
-
-| Column | Type | Constraint | Description |
-|--------|------|-----------|------------|
-| `student_id` | TEXT | PRIMARY KEY | Unique student identifier |
-| `user_id` | TEXT | FK → users.id | Link to user account |
-| `face_encoding` | BLOB | — | Serialized facial encoding vector |
-| `department` | TEXT | — | Department/program name |
-| `semester` | INTEGER | — | Current semester enrollment |
-
----
-
-### courses Table
-Course/subject definitions and instructor assignments.
-
-| Column | Type | Constraint | Description |
-|--------|------|-----------|------------|
-| `id` | TEXT | PRIMARY KEY | Course code (e.g., CS101) |
-| `course_name` | TEXT | — | Full course name |
-| `teacher_id` | TEXT | — | Assigned instructor ID |
-
----
-
-### attendance Table
-Individual attendance records.
-
-| Column | Type | Constraint | Description |
-|--------|------|-----------|------------|
-| `id` | INTEGER | PRIMARY KEY AUTOINCREMENT | Record ID |
-| `student_id` | TEXT | — | Student marked (FK → students) |
-| `course_id` | TEXT | — | Course attendance marked for |
-| `status` | TEXT | — | `present`, `absent`, or `late` |
-| `timestamp` | DATETIME | DEFAULT NOW | Record timestamp |
-| `marked_by` | TEXT | — | `system` or `teacher` |
-
----
-
-## User Roles & Capabilities
-
-### 👨‍💼 Administrator
-**Responsibility**: System and institutional management.
-
-**Capabilities:**
-- Create, delete, and manage user accounts
-- Configure course and subject structures
-- Assign teachers to courses
-- Upload student data (batch import)
-- Configure institutional semester structures
-- View system-wide analytics and logs
-- Manage system settings
-
-**Dashboard**: [dashboard/admin.html](dashboard/admin.html)
-
----
-
-### 👨‍🏫 Teacher / Faculty
-**Responsibility**: Course attendance and student management.
-
-**Capabilities:**
-- Start attendance session for assigned courses
-- View real-time attendance during class
-- Monitor student attendance trends
-- Manual attendance override (for late arrivals)
-- Generate subject-wise attendance reports
-- Perform student management tasks
-- Export attendance data
-
-**Dashboard**: [dashboard/teacher.html](dashboard/teacher.html)
-
----
-
-### 👨‍🎓 Student
-**Responsibility**: Self-service enrollment and attendance marking.
-
-**Capabilities:**
-- Register facial biometric during enrollment
-- Mark attendance using facial recognition
-- View personal attendance history
-- Track subject-wise attendance percentage
-- Receive low attendance alerts
-- Download attendance transcripts
-
-**Dashboard**: [dashboard/student.html](dashboard/student.html)
-
----
-
-## Workflows
-
-### 1. Student Enrollment Workflow
-
-```
-Student Registration
-  ↓
-1. Capture facial samples (20 images)
-   - MediaPipe detects face location
-   - Face_recognition creates encodings
-  ↓
-2. Encodings stored in database
-   - student.face_encoding (BLOB)
-  ↓
-3. Enrollment complete
-   - Student ready to mark attendance
-```
-
-### 2. Attendance Marking Workflow
-
-```
-Attendance Session Started
-  ↓
-1. Webcam captures live frame
-  ↓
-2. Face detection & recognition
-   - Compare against known encodings
-   - Confidence > 55% (distance < 0.45)
-  ↓
-3. Recognition buffer (3-frame confirmation)
-   - Reduce false positives
-  ↓
-4. Attendance record created
-   - student_id, course_id, status, timestamp
-  ↓
-5. Dashboard updated in real-time
-```
-
-### 3. Analytics Workflow
-
-```
-Dashboard loads
-  ↓
-1. Fetch student record from database
-  ↓
-2. Calculate statistics:
-   - Total classes attended
-   - Classes present
-   - Attendance percentage
-  ↓
-3. Render charts (Chart.js)
-  ↓
-4. Display on dashboard
-```
-
----
-
-## Troubleshooting
-
-### Issue: "No module named 'face_recognition'"
-
-**Solution:**
 ```bash
-pip install git+https://github.com/ageitgey/face_recognition_models
-pip install face-recognition
-```
+# Clone the repository
+git clone <repo-url>
+cd DigitalAttendance
 
----
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate       # Windows PowerShell: .\venv\Scripts\Activate.ps1
 
-### Issue: "dlib cannot be imported" or Build Errors
-
-**Solution:**
-Ensure dlib pre-built wheel is installed before other dependencies:
-```bash
-pip install https://github.com/z-mahmud22/Dlib_Windows_Python3.x/raw/main/dlib-19.24.99-cp312-cp312-win_amd64.whl
+# Install dependencies
 pip install -r requirements.txt
 ```
 
+> **Note on InsightFace:** The first run downloads the `buffalo_l` model pack (~300MB) to `~/.insightface/models/`. This is a one-time download. Ensure internet access on first launch.
+
+### Database setup
+
+```bash
+# 1. Create the PostgreSQL database
+psql -U postgres -c "CREATE DATABASE attendance_system;"
+
+# 2. Configure .env
+cp .env.example .env          # Windows PowerShell: Copy-Item .env.example .env
+# Edit .env — fill in DB_HOST, DB_NAME, DB_USER, DB_PASSWORD
+
+# 3. Run schema migrations
+python main.py db
+# Output: ✔  Schema migration complete.
+```
+
+Migrations run automatically on every server start, so `python main.py db` is only needed before the first `server` launch.
+
+### Start the API server
+
+```bash
+python main.py server
+# or directly:
+uvicorn api.server:app --host 0.0.0.0 --port 8000 --reload
+```
+
+Swagger UI: `http://localhost:8000/docs`  
+Health check: `http://localhost:8000/`
+
+### Load demo data (optional)
+
+```bash
+psql -U postgres -d attendance_system -f seed.sql
+```
+
+This loads 2 classrooms, 6 CSE Sem-4 courses, 6 teachers, 5 students, and a full weekly timetable based on IIIT Vadodara's CSE Sem-4 schedule.
+
+### Open the frontend
+
+Open any of the UI pages directly in a browser:
+```
+ui/login.html
+```
+No web server required — all pages call `http://localhost:8000` directly.
+
 ---
 
-### Issue: "Python 3.13+ not supported"
+## 10. CSV Data Formats
 
-**Solution:**
-Use Python 3.10, 3.11, or 3.12. Check version:
-```bash
-python --version
+All CSV files use UTF-8 encoding. The first row must be a header. Extra columns are ignored. Rows that fail validation are skipped (not rolled back) and counted in the `skipped` response.
+
+### `students.csv`
+```csv
+student_id,name,email,department,semester
+202411090,Shreyash Chaurasia,202411090@university.edu,CSE,4
+202411044,Ishant Yadav,202411044@university.edu,CSE,4
+```
+
+### `teachers.csv`
+```csv
+teacher_id,name,email,department
+T001,Prof. Mehta,mehta@university.edu,CSE
+T002,Prof. Shah,shah@university.edu,CSE
+```
+
+### `courses.csv`
+```csv
+course_id,course_name,department,semester,credits
+CS401,Computer Organisation and Architecture,CSE,4,4
+CS402,Database Management Systems,CSE,4,4
+```
+`credits` is optional; defaults to 3.
+
+### `schedule.csv`
+```csv
+course_id,classroom_id,day_of_week,start_time,end_time
+CS401,CR-2113,Monday,14:00,15:30
+CS402,CR-2113,Tuesday,14:00,15:30
+```
+`day_of_week` must match exactly: `Monday`, `Tuesday`, `Wednesday`, `Thursday`, `Friday`, `Saturday`, `Sunday`.  
+Times in `HH:MM` 24-hour format.
+
+### `course_teachers.csv`
+```csv
+course_id,teacher_id
+CS401,T001
+CS402,T002
 ```
 
 ---
 
-### Issue: Webcam Not Detected
+## 11. Face Registration Workflow
 
-**Solution:**
-1. Verify camera hardware is connected
-2. Check if other application is using camera
-3. Verify OpenCV can access camera:
-   ```bash
-   python -c "import cv2; cap = cv2.VideoCapture(0); print(cap.isOpened())"
-   ```
-4. Try different camera index (0, 1, 2) in recognizer_v2.py
+Registration is a one-time per-student operation, ideally done in the first week of every semester.
 
----
-
-### Issue: Face Recognition Not Working (Low Accuracy)
-
-**Solution:**
-- Ensure good lighting conditions
-- Face should be clearly visible
-- Camera resolution should be adequate (640x480 minimum)
-- Increase face samples during registration (currently 20)
-- Adjust confidence threshold in recognizer_v2.py (default: 0.45)
-
----
-
-### Issue: Database Locked or Corrupted
-
-**Solution:**
 ```bash
-cd src
-rm attendance_system.db
-python main.py  # Reinitialize
+python main.py register
 ```
 
+**What happens:**
+1. The terminal prompts: `Enter Student ID:`
+2. The system verifies the ID exists in the `students` table. If not, it aborts — the admin must add the student record first.
+3. If the student already has a face registered, you are asked to confirm overwrite.
+4. The camera opens. The student looks directly at the camera.
+5. 20 face samples are captured over ~5–10 seconds (visible progress bar in terminal).
+6. All 20 embeddings are averaged and L2-normalized into a single 512-dimensional float32 vector.
+7. The vector is stored as `BYTEA` in `students.face_encoding`.
+8. `registered_at` timestamp and an `audit_log` entry are written.
+
+**Important notes:**
+- Raw images are never stored. The system only stores the averaged embedding. This cannot be reversed back to a face image (privacy by design).
+- The registration terminal does not need to be the same machine as the classroom recognition terminal.
+- New registrations are picked up by running recognition engines within 60 seconds (the face DB reload interval).
+- Run on a machine with a webcam. Headless servers without cameras cannot run registration.
+
 ---
 
-### Issue: CORS Errors in Frontend
+## 12. Recognition Engine Deep Dive
 
-**Solution:**
-Ensure FastAPI server is running and CORS middleware is enabled:
+File: `recognition/recognizer.py`
+
+### Key constants (at top of file)
+
+| Constant | Value | Effect |
+|---|---|---|
+| `RECOGNITION_BUFFER` | `3` | Consecutive matching frames before marking |
+| `RELOAD_INTERVAL_SECS` | `60` | How often face DB is refreshed from PostgreSQL |
+| `WAIT_POLL_SECS` | `3` | Poll interval when no active lecture |
+| `AUTO_START` | `True` | Auto-create lecture from schedule if none active |
+
+### InsightFace `buffalo_l` model
+- Detects and embeds faces in a single `model.get(frame)` call.
+- Returns a list of `Face` objects, each with `.bbox`, `.embedding` (512-dim float32), `.det_score`.
+- Detection resolution is set to `640×640` in settings for a balance of speed and accuracy.
+- The camera is explicitly set to `640×480` capture to keep frame processing fast.
+
+### Cosine similarity matching
+`utils/face_utils.cosine_match()` performs:
 ```python
-# In src/api/server.py
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+similarities = known_matrix @ query   # matrix multiply: (N,512) @ (512,) = (N,)
+best_idx = np.argmax(similarities)
+best_score = similarities[best_idx]
 ```
+Both `known_matrix` rows and `query` are L2-normalized, so this is equivalent to cosine similarity. Threshold: `0.50` (configurable). A score of `1.0` means identical faces; `0.0` means no similarity.
+
+### Multi-device support
+Multiple devices can run the recognizer for the same classroom simultaneously. They all call `mark_attendance()` for the same `lecture_id`. Duplicate marks are absorbed by the `UNIQUE (student_id, lecture_id)` constraint in the `attendance` table — no data corruption.
+
+### Why the process is separate
+The recognition loop is CPU-bound (model inference) and must not block FastAPI's async event loop. Using `asyncio.create_subprocess_exec()` keeps them completely isolated. The API server streams the subprocess's stdout to its own logger for debugging.
 
 ---
 
-### Issue: API Server Not Responding
+## 13. Analytics System
 
-**Solution:**
-1. Verify server is running: `http://localhost:8000`
-2. Check port 8000 is not in use:
-   ```bash
-   netstat -an | findstr :8000  # Windows
-   lsof -i :8000                 # macOS/Linux
-   ```
-3. Run server explicitly:
-   ```bash
-   cd src
-   uvicorn api.server:app --reload --host 0.0.0.0 --port 8000
-   ```
+File: `services/analytics_service.py`
 
----
+All analytics are computed entirely in PostgreSQL using aggregation queries — no Python-side computation. This means analytics scale with your database, not your server's RAM.
 
-## Security Considerations
+### Student summary (`GET /analytics/student/{id}`)
+Joins `courses` → `students` (matching department + semester) → `lecture_sessions` (closed only) → `attendance`. Returns:
+- Overall attendance percentage across all subjects.
+- Per-subject: total lectures held, attended, percentage, status (`good` / `warning` / `critical`).
 
-> ⚠️ **Note**: This is a demonstration/educational system. For production use, implement:
-- Password hashing (bcrypt, argon2)
-- JWT token-based authentication
-- HTTPS/TLS encryption
-- Role-based access control (RBAC) on API
-- Input validation and sanitization
-- Database encryption
-- Audit logging
-- Rate limiting
+### Teacher stats (`GET /analytics/teacher/{id}`)
+Returns each course the teacher teaches with: total lectures held, total student-attendances, average attendance percentage.
 
----
+### Admin dashboard (`GET /analytics/admin/dashboard`)
+System-wide aggregate: total students, total lectures, overall attendance rate, breakdown by department.
 
-## Future Enhancements
+### Low-attendance alerts (`GET /analytics/admin/alerts`)
+Returns all students whose attendance in any subject falls below `analytics.low_attendance_threshold` (default 75%). Useful for the admin to flag students at risk.
 
-- [ ] Multi-camera support for distributed campuses
-- [ ] Deep learning-based face detection (YOLO)
-- [ ] Automated SMS/email attendance notifications
-- [ ] Mobile app integration
-- [ ] Biometric liveness detection (anti-spoofing)
-- [ ] Scheduled automated attendance
-- [ ] Advanced analytics and predictive modeling
-- [ ] Integration with student information system (SIS)
-- [ ] Docker containerization
-- [ ] CI/CD pipeline
+### Live lecture snapshot (`GET /lecture/{id}/live`)
+For the teacher's live dashboard. Returns the list of enrolled students split into present and absent based on real-time `attendance` table contents.
+
+### Thresholds (configurable in `config/settings.py`)
+
+| Status | Condition |
+|---|---|
+| `good` | percentage ≥ 75% |
+| `warning` | 60% ≤ percentage < 75% |
+| `critical` | percentage < 60% |
 
 ---
 
-## License
+## 14. Known Bugs & Current Issues
 
-This project is licensed under the MIT License. See [LICENSE](LICENSE) file for details.
+### Bug 1 — `UNIQUE (classroom_id, status)` constraint is broken
+**File:** `migrations/schema.py`, `lecture_sessions` table.  
+**Problem:** The constraint `UNIQUE (classroom_id, status) DEFERRABLE` means a classroom can have at most one row with `status = 'closed'`. After the first lecture ends, every subsequent lecture end will hit a unique violation.  
+**Fix:** Remove the UNIQUE constraint. The one-active-per-room guard should be done in application logic inside `start_lecture()` (already done via the `SELECT ... WHERE status = 'active'` check), not via a DB constraint on status.
+
+### Bug 2 — `start_lecture` force-fallback picks a random course
+**File:** `services/lecture_service.py`, line: `SELECT course_id FROM weekly_schedule WHERE classroom_id = $1 LIMIT 1`  
+**Problem:** No `ORDER BY`. When outside scheduled hours and `force=True`, this selects an arbitrary course — often the wrong one.  
+**Fix:** Order by time proximity: `ORDER BY ABS(EXTRACT(EPOCH FROM (start_time - CURRENT_TIME)))` to pick the nearest upcoming course.
+
+### Bug 3 — No classroom device authentication
+**Problem:** There is no `classroom_id` login endpoint. Classroom devices have no scoped identity token. The teacher dashboard has classrooms hardcoded as `CR-2113` and `CR-LAB` in an HTML dropdown.  
+**Fix needed:** `POST /classroom/login` with classroom_id + PIN → returns a classroom-scoped JWT. Classroom login page (`ui/classroom.html`) with smart upcoming lecture suggestions.
+
+### Bug 4 — Schedule service only matches the exact current moment
+**File:** `services/schedule_service.py`  
+**Problem:** `get_current_course()` returns a course only if the current time is strictly within a scheduled slot. A lecture started 2 minutes early or a device that boots after the scheduled start time finds nothing.  
+**Fix:** Add a `GET /lecture/upcoming/{classroom_id}?limit=3` endpoint returning the next N scheduled lectures (ordered by time), so the device can show contextual suggestions and let the user pick.
+
+### Bug 5 — In-memory recognition process registry lost on restart
+**File:** `core/recognition_manager.py`  
+**Problem:** `_processes: dict[str, asyncio.subprocess.Process]` is a module-level dict. If the FastAPI server crashes and restarts, this dict is empty — but the database still shows lectures as `active`. The recognizer auto-starts a new lecture via `AUTO_START`, potentially violating the active-lecture uniqueness guard.  
+**Fix:** On server startup, query for any orphaned `active` lectures (started before server boot) and either close them automatically or reconcile against running processes.
+
+### Bug 6 — Frontend classroom options are hardcoded
+**File:** `ui/teacher.html`  
+**Problem:** `<select id="classroom-select">` has hardcoded `<option>` values `CR-2113` and `CR-LAB`. Adding a new classroom to the database does not update the dropdown.  
+**Fix:** Populate the dropdown dynamically via `GET /admin/classrooms` on page load.
 
 ---
 
-## Support & Contribution
+## 15. Planned Enhancements
 
-For issues, feature requests, or contributions, please refer to the [docs](docs/face_rec.md) for technical specifications.
+The following features are identified for the next development phase:
 
-## Tech Stack
+| Feature | Description |
+|---|---|
+| Classroom login ID | Per-device classroom authentication with PIN, returning a scoped JWT. Up to 4 devices per room sharing the same lecture session. |
+| Smart lecture suggestions | Classroom login page shows the next 2–3 upcoming lectures for that room based on schedule + current time, with countdown timers. |
+| Admin inline spreadsheet editor | Load any database table (students, teachers, courses, schedule) into an editable grid within the admin page. Support row add, edit, delete, save — no CSV required. |
+| JWT authentication | Protect all API endpoints with role-scoped JWT tokens. Currently the API is completely open. |
+| WebSocket live dashboard | Replace the teacher dashboard's polling with WebSocket push so attendance updates appear instantly without page-side `setInterval` calls. |
+| Liveness detection | Add blink or head-movement check during face recognition to prevent photo spoofing (holding up a photo to the camera). |
+| PDF / Excel report export | Allow teachers and admins to download per-lecture or per-semester attendance reports as PDF or Excel files. |
+| Geofencing | Validate that student's device (if they have a companion app) is on campus at mark time. |
+| Student companion app | Mobile app for students to view their attendance, receive low-attendance warnings, and view lecture schedules. |
+| Multi-department scalability | Currently the analytics JOIN uses `department + semester` matching. Multiple departments with the same semester number work correctly, but load testing is needed at scale. |
 
-- **Backend**: Python, FastAPI, SQLite
-- **Frontend**: HTML, CSS, JavaScript, Chart.js
-- **Computer Vision**: OpenCV, face_recognition, dlib, MediaPipe
+---
 
-## License
+## 16. Seed / Demo Data
 
-See [LICENSE](LICENSE) for details.
+`seed.sql` contains a complete test dataset based on the CSE Semester 4 timetable at IIIT Vadodara:
+
+**Classrooms:** `CR-2113` (Main Block, 60 seats), `CR-LAB` (Lab Block, 30 seats)
+
+**Courses (CSE Sem 4):**
+
+| ID | Name | Credits |
+|---|---|---|
+| CS401 | Computer Organisation and Architecture | 4 |
+| CS402 | Database Management Systems | 4 |
+| CS403 | System Software | 3 |
+| CS404 | Software Engineering | 3 |
+| CS405 | Mathematics | 4 |
+| CS406 | Economics | 3 |
+
+**Sample students:**
+
+| ID | Name | Email |
+|---|---|---|
+| 202411090 | Shreyash Chaurasia | 202411090@diu.iiitvadodara.ac.in |
+| 202411044 | Ishant Yadav | 202411044@diu.iiitvadodara.ac.in |
+| 202411052 | Kavya Sharma | 202411052@diu.iiitvadodara.ac.in |
+| 202411064 | Naman Panwar | 202411064@diu.iiitvadodara.ac.in |
+| 202411028 | Chinmay Patil | 202411028@diu.iiitvadodara.ac.in |
+
+**Sample weekly timetable (Mon–Fri):**
+
+| Day | Time | Room | Course |
+|---|---|---|---|
+| Monday | 09:00–13:15 | CR-LAB | CS401 COA Lab |
+| Monday | 14:00–15:30 | CR-2113 | CS401 COA Theory |
+| Monday | 15:30–17:00 | CR-2113 | CS403 System Software |
+| Tuesday | 09:00–13:00 | CR-LAB | CS405 Maths Lab + Tutorial |
+| Tuesday | 14:00–15:30 | CR-2113 | CS402 DBMS |
+| Tuesday | 15:30–17:00 | CR-2113 | CS404 Software Engineering |
+| Wednesday | 10:45–12:30 | CR-LAB | CS402 DBMS Lab |
+| Wednesday | 14:00–15:30 | CR-2113 | CS406 Economics |
+| Wednesday | 15:30–17:00 | CR-2113 | CS401 COA |
+| Thursday | 09:00–12:00 | CR-LAB | CS404 SE Tutorial + Lab |
+| Thursday | 14:00–15:30 | CR-2113 | CS403 System Software |
+| Thursday | 15:30–17:00 | CR-2113 | CS402 DBMS |
+| Friday | 14:00–15:30 | CR-2113 | CS406 Economics |
+
+---
+
+## 17. Key Design Decisions
+
+**Why asyncpg instead of SQLAlchemy or psycopg2?**  
+FastAPI is fully async. asyncpg is the fastest async PostgreSQL driver for Python, using the binary wire protocol directly. SQLAlchemy's async layer adds overhead; psycopg2 is synchronous and would block the event loop.
+
+**Why PostgreSQL `$1, $2` placeholders?**  
+PostgreSQL uses positional placeholders, not `?` (that's SQLite). Early versions of this project used `?` with asyncpg, which caused every query to throw `invalid syntax` errors. All queries now use `$1, $2, ...`.
+
+**Why store only the averaged embedding, not raw face images?**  
+Privacy. Raw images are biometric data subject to GDPR/PDPA regulations. Storing only the 512-dim float32 vector satisfies the functional requirement (matching) without retaining reversible biometric data.
+
+**Why a 3-frame recognition buffer?**  
+A single-frame match can be a false positive from a passing face, a reflection, or a photo. Requiring 3 consecutive matching frames with the same identity reduces false positive marks to near zero in practice.
+
+**Why run the recognition engine as a subprocess, not an async task?**  
+InsightFace's model inference is CPU-bound and blocks Python's GIL. Running it as an `asyncio.Task` inside the FastAPI event loop would stall the entire API. A separate subprocess (via `asyncio.create_subprocess_exec`) gives it its own Python interpreter and CPU core.
+
+**Why reload face DB every 60 seconds instead of on-demand?**  
+New students can be registered at any terminal during the registration window (first 1–2 weeks of semester). A 60-second reload ensures all classroom recognition engines pick up new registrations automatically without requiring a restart. The reload is a single lightweight `SELECT student_id, name, face_encoding FROM students WHERE face_encoding IS NOT NULL`.
+
+**Why `BYTEA` for face embeddings?**  
+PostgreSQL's native binary type. The original schema used `BLOB` (SQLite-only). `BYTEA` stores the raw float32 bytes efficiently and roundtrips cleanly through asyncpg without any encoding overhead.
+
+**Why `ON CONFLICT DO NOTHING` in CSV imports?**  
+Bulk imports are expected to be run multiple times (e.g., admin re-exports and re-imports the same student list). Silently skipping duplicates means imports are idempotent. The returned `inserted` / `skipped` counts tell the admin what happened.
