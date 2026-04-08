@@ -16,25 +16,47 @@ ENV_FILE = PROJECT_ROOT / ".env"
 load_dotenv(dotenv_path=ENV_FILE, override=False)
 
 
+def _resolve_db_path() -> str:
+    raw = os.getenv("DB_PATH")
+    if not raw:
+        return str(PROJECT_ROOT / "attendance_system.db")
+    path = Path(raw)
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    return str(path)
+
+
 # ─────────────────────────────────────────────
 # DATABASE
 # ─────────────────────────────────────────────
 @dataclass(frozen=True)
 class DatabaseSettings:
+    engine: str   = field(default_factory=lambda: os.getenv("DB_ENGINE", "sqlite").lower())
     host: str     = field(default_factory=lambda: os.getenv("DB_HOST", "localhost"))
     port: int     = field(default_factory=lambda: int(os.getenv("DB_PORT", "5432")))
     name: str     = field(default_factory=lambda: os.getenv("DB_NAME", "attendance_system"))
     user: str     = field(default_factory=lambda: os.getenv("DB_USER", "postgres"))
     password: str = field(default_factory=lambda: os.getenv("DB_PASSWORD", ""))
+    path: str     = field(default_factory=_resolve_db_path)
     pool_min: int = 2
     pool_max: int = 10
 
     @property
     def dsn(self) -> str:
+        if self.engine == "sqlite":
+            return self.path
         return (
             f"postgresql://{self.user}:{self.password}"
             f"@{self.host}:{self.port}/{self.name}"
         )
+
+    @property
+    def is_sqlite(self) -> bool:
+        return self.engine == "sqlite"
+
+    @property
+    def is_postgres(self) -> bool:
+        return self.engine == "postgresql"
 
 
 # ─────────────────────────────────────────────

@@ -15,7 +15,16 @@ import os
 import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ModuleNotFoundError as exc:
+    raise SystemExit(
+        "Missing project dependencies for this interpreter.\n"
+        "Activate the project virtual environment first:\n"
+        "  .\\venv\\Scripts\\Activate.ps1\n"
+        "Then run:\n"
+        "  python main.py register"
+    ) from exc
 
 load_dotenv(dotenv_path=Path(__file__).resolve().with_name(".env"), override=False)
 
@@ -34,7 +43,7 @@ def cmd_db():
         await init_pool()
         await run_migrations()
         await close_pool()
-        print("✔  Schema migration complete.")
+        print("Schema migration complete.")
 
     asyncio.run(_run())
 

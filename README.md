@@ -498,7 +498,7 @@ CLASSROOM_ID=CR-2113
 
 ### Prerequisites
 - Python 3.12 recommended
-- PostgreSQL 14+
+- SQLite for local development, or PostgreSQL 14+ for the production-style setup
 - A webcam (for recognition and registration terminals)
 - Git
 
@@ -520,6 +520,38 @@ pip install -r requirements.txt
 > **Note on InsightFace:** The first run downloads the `buffalo_l` model pack (~300MB) to `~/.insightface/models/`. This is a one-time download. Ensure internet access on first launch.
 
 ### Database setup
+
+#### Local development
+
+The project now defaults to a local SQLite database file, so you can run it
+without installing PostgreSQL.
+
+```bash
+# 1. Configure .env
+cp .env.example .env          # Windows PowerShell: Copy-Item .env.example .env
+
+# 2. Keep the default local DB mode
+# DB_ENGINE=sqlite
+# DB_PATH=attendance_system.db
+
+# 3. Run schema migrations
+python main.py db
+```
+
+This creates `attendance_system.db` in the project root.
+
+#### PostgreSQL setup
+
+If you want the original PostgreSQL-backed setup, change `.env` to:
+
+```env
+DB_ENGINE=postgresql
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=attendance_system
+DB_USER=postgres
+DB_PASSWORD=your_password_here
+```
 
 ```bash
 # 1. Create the PostgreSQL database
@@ -554,6 +586,9 @@ psql -U postgres -d attendance_system -f seed.sql
 ```
 
 This loads 2 classrooms, 6 CSE Sem-4 courses, 6 teachers, 5 students, and a full weekly timetable based on IIIT Vadodara's CSE Sem-4 schedule.
+
+`seed.sql` is intended for PostgreSQL. For SQLite local mode, use the admin CSV
+upload endpoints or add records through the UI/API.
 
 ### Open the frontend
 

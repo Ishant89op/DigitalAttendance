@@ -11,8 +11,6 @@ Responsibilities:
 import logging
 from datetime import datetime, timezone
 
-from asyncpg import UniqueViolationError
-
 from core.database import transaction
 
 logger = logging.getLogger(__name__)
@@ -32,15 +30,18 @@ async def mark_attendance(
     """
     try:
         async with transaction() as conn:
-            await conn.execute(
+            result = await conn.execute(
                 """
                 INSERT INTO attendance (student_id, lecture_id, source, marked_by)
                 VALUES ($1, $2, $3, $4)
+                ON CONFLICT (student_id, lecture_id) DO NOTHING
                 """,
                 student_id, lecture_id, source, marked_by,
             )
 
-            # Audit trail
+            if result.endswith("0"):
+                return False
+
             await conn.execute(
                 """
                 INSERT INTO audit_log (event_type, actor_id, target_id, detail)
@@ -58,13 +59,9 @@ async def mark_attendance(
                 datetime.now(timezone.utc).isoformat(),
             )
 
-        logger.info("✔ Attendance marked  student=%s  lecture=%d  via=%s",
+        logger.info("Attendance marked  student=%s  lecture=%d  via=%s",
                     student_id, lecture_id, source)
         return True
-
-    except UniqueViolationError:
-        # Already marked — not an error
-        return False
 
     except Exception as exc:
         logger.error("Failed to mark attendance for %s: %s", student_id, exc)
