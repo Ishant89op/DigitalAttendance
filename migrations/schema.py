@@ -10,6 +10,8 @@ Changes from v2:
   - ADDED: access_pin column to classrooms for classroom-device login.
   - ADDED: upcoming lectures view helper index.
   - ADDED: recognition_sessions table for persistent camera process tracking.
+    - ADDED: attendance_disputes workflow table.
+    - ADDED: defaulter_reminders table for weekly reminder tracking.
 """
 
 SCHEMA_SQL = """
@@ -30,6 +32,19 @@ CREATE TABLE IF NOT EXISTS users (
     role         TEXT NOT NULL CHECK (role IN ('admin', 'teacher', 'student')),
     password_hash TEXT NOT NULL,
     created_at   TIMESTAMPTZ DEFAULT NOW()
+);
+
+
+-- ─────────────────────────────────────────────
+-- LOGIN CREDENTIALS
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS login_credentials (
+    role          TEXT NOT NULL CHECK (role IN ('admin', 'teacher', 'student')),
+    principal_id  TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    created_at    TIMESTAMPTZ DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (role, principal_id)
 );
 
 
@@ -95,6 +110,44 @@ BEGIN
         ALTER TABLE classrooms ADD COLUMN access_pin TEXT DEFAULT '1234';
     END IF;
 END$$;
+
+
+-- ─────────────────────────────────────────────
+-- DEFAULT LOGIN CREDENTIAL SEEDING
+-- ─────────────────────────────────────────────
+INSERT INTO login_credentials (role, principal_id, password_hash)
+VALUES (
+    'admin',
+    'admin',
+    encode(digest('admin123', 'sha256'), 'hex')
+)
+ON CONFLICT (role, principal_id) DO NOTHING;
+
+INSERT INTO login_credentials (role, principal_id, password_hash)
+SELECT
+    'student',
+    s.student_id,
+    encode(digest(s.student_id, 'sha256'), 'hex')
+FROM students s
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM login_credentials lc
+    WHERE lc.role = 'student'
+      AND lc.principal_id = s.student_id
+);
+
+INSERT INTO login_credentials (role, principal_id, password_hash)
+SELECT
+    'teacher',
+    t.teacher_id,
+    encode(digest(t.teacher_id, 'sha256'), 'hex')
+FROM teachers t
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM login_credentials lc
+    WHERE lc.role = 'teacher'
+      AND lc.principal_id = t.teacher_id
+);
 
 
 -- ─────────────────────────────────────────────
@@ -227,6 +280,57 @@ CREATE TABLE IF NOT EXISTS audit_log (
 
 CREATE INDEX IF NOT EXISTS idx_audit_event_type ON audit_log (event_type);
 CREATE INDEX IF NOT EXISTS idx_audit_created_at ON audit_log (created_at DESC);
+
+
+-- ─────────────────────────────────────────────
+-- ATTENDANCE DISPUTES
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS attendance_disputes (
+    dispute_id       BIGSERIAL PRIMARY KEY,
+    student_id       TEXT NOT NULL REFERENCES students(student_id) ON DELETE CASCADE,
+    course_id        TEXT REFERENCES courses(course_id) ON DELETE SET NULL,
+    lecture_id       INTEGER REFERENCES lecture_sessions(lecture_id) ON DELETE SET NULL,
+    reason           TEXT NOT NULL,
+    evidence         TEXT,
+    status           TEXT NOT NULL DEFAULT 'open'
+                        CHECK (status IN ('open', 'approved', 'rejected')),
+    reviewer_id      TEXT,
+    reviewer_role    TEXT CHECK (reviewer_role IN ('teacher', 'admin')),
+    resolution_note  TEXT,
+    created_at       TIMESTAMPTZ DEFAULT NOW(),
+    reviewed_at      TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_disputes_student
+    ON attendance_disputes (student_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_disputes_status
+    ON attendance_disputes (status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_disputes_course
+    ON attendance_disputes (course_id);
+
+
+-- ─────────────────────────────────────────────
+-- DEFAULTER REMINDERS
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS defaulter_reminders (
+    reminder_id       BIGSERIAL PRIMARY KEY,
+    student_id        TEXT NOT NULL REFERENCES students(student_id) ON DELETE CASCADE,
+    course_id         TEXT NOT NULL REFERENCES courses(course_id) ON DELETE CASCADE,
+    percentage        NUMERIC(5,2) NOT NULL,
+    week_start        DATE NOT NULL,
+    status            TEXT NOT NULL DEFAULT 'pending'
+                         CHECK (status IN ('pending', 'sent')),
+    delivery_channel  TEXT NOT NULL DEFAULT 'in_app',
+    message           TEXT,
+    created_at        TIMESTAMPTZ DEFAULT NOW(),
+    sent_at           TIMESTAMPTZ,
+    UNIQUE (student_id, course_id, week_start)
+);
+
+CREATE INDEX IF NOT EXISTS idx_reminders_status
+    ON defaulter_reminders (status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_reminders_week
+    ON defaulter_reminders (week_start DESC);
 
 """
 

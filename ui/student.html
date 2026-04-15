@@ -15,6 +15,7 @@
   <div class="topbar">
     <span class="topbar-title" id="page-title">Overview</span>
     <div class="topbar-right">
+      <button class="btn btn-ghost" style="padding:6px 10px;font-size:11px" onclick="changePassword()">Change Password</button>
       <span class="live-dot">Live</span>
       <span id="clock" style="font-family:var(--mono);font-size:12px;color:var(--muted)"></span>
     </div>
@@ -49,6 +50,15 @@
           </div>
         </div>
       </div>
+
+      <div class="panel" style="margin-top:18px">
+        <div class="panel-header">
+          <span class="panel-title">Risk Forecast</span>
+        </div>
+        <div class="panel-body" id="forecast-body">
+          <div class="empty-state"><p>Loading forecast…</p></div>
+        </div>
+      </div>
     </div>
 
     <!-- HISTORY -->
@@ -60,11 +70,45 @@
             <option value="">All Subjects</option>
           </select>
         </div>
+        <div style="padding:0 20px 12px;font-size:12px;color:var(--muted)">
+          Every closed lecture is listed with lecture ID and present or absent status. Use "Raise dispute" to prefill the dispute form.
+        </div>
         <div style="overflow-x:auto">
           <table class="data-table">
-            <thead><tr><th>Date</th><th>Time</th><th>Subject</th><th>Room</th><th>Source</th></tr></thead>
+            <thead><tr><th>Date</th><th>Time</th><th>Lecture ID</th><th>Subject</th><th>Room</th><th>Status</th><th>Marked At</th><th>Source</th><th>Action</th></tr></thead>
             <tbody id="history-body">
-              <tr><td colspan="5"><div class="empty-state"><p>Loading…</p></div></td></tr>
+              <tr><td colspan="9"><div class="empty-state"><p>Loading…</p></div></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- DISPUTES -->
+    <div id="section-disputes" style="display:none">
+      <div class="panel" style="margin-bottom:18px">
+        <div class="panel-header"><span class="panel-title">Raise Attendance Dispute</span></div>
+        <div class="panel-body">
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px">
+            <div class="form-group" style="margin:0"><label>Course ID</label><input id="dispute-course" placeholder="e.g. CS204"></div>
+            <div class="form-group" style="margin:0"><label>Lecture ID (optional)</label><input id="dispute-lecture" type="number" placeholder="e.g. 42"></div>
+            <div class="form-group" style="margin:0;grid-column:1/-1"><label>Reason</label><input id="dispute-reason" placeholder="I was present but not marked"></div>
+            <div class="form-group" style="margin:0;grid-column:1/-1"><label>Evidence (optional)</label><input id="dispute-evidence" placeholder="Any note or context"></div>
+          </div>
+          <button class="btn btn-primary" style="margin-top:12px" onclick="raiseDispute()">Submit Dispute</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">My Disputes</span>
+          <button class="btn btn-ghost" onclick="loadDisputes()">↻ Refresh</button>
+        </div>
+        <div style="overflow-x:auto">
+          <table class="data-table">
+            <thead><tr><th>ID</th><th>Course</th><th>Lecture</th><th>Reason</th><th>Status</th><th>Reviewed</th></tr></thead>
+            <tbody id="disputes-body">
+              <tr><td colspan="6"><div class="empty-state"><p>Loading…</p></div></td></tr>
             </tbody>
           </table>
         </div>
@@ -82,12 +126,13 @@ const user = getUser();
 initSidebar('student', user.name, user.id, [
   { icon: '◉', label: 'Overview', active: true,  onclick: "showSection('overview',event)" },
   { icon: '📋', label: 'History', active: false, onclick: "showSection('history',event)" },
+  { icon: '⚑', label: 'Disputes', active: false, onclick: "showSection('disputes',event)" },
 ]);
 
 startClock('clock');
 
 function showSection(name, e) {
-  ['overview','history'].forEach(s =>
+  ['overview','history','disputes'].forEach(s =>
     document.getElementById('section-'+s).style.display = s===name ? '' : 'none'
   );
   document.getElementById('page-title').textContent =
@@ -95,6 +140,7 @@ function showSection(name, e) {
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   if (e && e.target) e.target.closest('.nav-item').classList.add('active');
   if (name === 'history') loadHistory();
+  if (name === 'disputes') loadDisputes();
 }
 
 async function loadDashboard() {
@@ -102,10 +148,47 @@ async function loadDashboard() {
     const d = await api.get('/analytics/student/' + user.id);
     renderStats(d);
     renderSubjects(d.subjects || []);
+    await loadForecast();
     await loadRecentActivity();
     await populateCourseFilter(d.subjects || []);
   } catch(e) {
     toast('Failed to load: ' + e.message, 'error');
+  }
+}
+
+async function loadForecast() {
+  try {
+    const fc = await api.get('/analytics/student/' + user.id + '/forecast');
+    const risky = (fc.courses || []).filter(c => c.likely_below_threshold);
+    document.getElementById('forecast-body').innerHTML = `
+      <div class="two-col" style="margin:0">
+        <div>
+          <div style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em">Overall Current</div>
+          <div style="font-size:28px;font-weight:700;color:var(--text)">${fc.overall_current_percentage}%</div>
+        </div>
+        <div>
+          <div style="font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:0.04em">Projected Next Window</div>
+          <div style="font-size:28px;font-weight:700;color:${fc.likely_below_threshold ? '#dc2626':'#16a34a'}">${fc.overall_projected_percentage}%</div>
+        </div>
+      </div>
+      <div style="margin-top:10px;font-size:12px;color:var(--muted)">
+        ${fc.likely_below_threshold ? '⚠ Risk predicted below threshold. Focus on upcoming lectures.' : '✓ Projected to remain above threshold.'}
+      </div>
+      <div style="margin-top:12px">
+        ${(fc.courses || []).map(course => `
+          <div class="progress-row">
+            <span class="progress-label" title="${course.course_name}">${course.course_name}</span>
+            <div class="progress-track">
+              <div class="progress-fill ${pctClass(course.projected_percentage)}" style="width:${Math.min(course.projected_percentage,100)}%"></div>
+            </div>
+            <span class="progress-pct ${pctClass(course.projected_percentage)}">${course.projected_percentage}%</span>
+          </div>
+        `).join('')}
+      </div>
+      ${risky.length ? `<div style="margin-top:8px"><span class="badge danger">${risky.length} course(s) likely below ${fc.threshold}%</span></div>` : ''}
+    `;
+  } catch (e) {
+    document.getElementById('forecast-body').innerHTML = '<div class="empty-state"><p>Forecast unavailable</p></div>';
   }
 }
 
@@ -200,21 +283,129 @@ async function populateCourseFilter(subjects) {
 
 async function loadHistory() {
   const course = document.getElementById('course-filter').value;
-  const url = '/analytics/student/' + user.id + '/history?limit=100' + (course ? '&course_id='+course : '');
+  const url = '/analytics/student/' + user.id + '/history?limit=200&include_absent=true'
+    + (course ? '&course_id=' + encodeURIComponent(course) : '');
   try {
     const history = await api.get(url);
-    document.getElementById('history-body').innerHTML = history.length
-      ? history.map(h => `<tr>
-          <td>${formatDate(h.timestamp)}</td>
-          <td style="font-family:var(--mono);font-size:12px">${formatTime(h.timestamp)}</td>
-          <td style="font-weight:500">${h.course_name}</td>
-          <td style="font-family:var(--mono);font-size:11px;color:var(--muted)">${h.classroom_id || '–'}</td>
-          <td><span class="badge ${h.source==='face_recognition'?'good':'info'}">
-            ${h.source==='face_recognition'?'👁 Face':'✏ Manual'}
-          </span></td>
-        </tr>`).join('')
-      : '<tr><td colspan="5"><div class="empty-state"><p>No records found</p></div></td></tr>';
+    const body = document.getElementById('history-body');
+    body.innerHTML = history.length
+      ? history.map(h => {
+          const status = h.attendance_status === 'present' ? 'present' : 'absent';
+          const sessionTs = h.start_time || h.timestamp;
+          const markedTs = h.marked_at || h.timestamp;
+          const sourceClass = h.source === 'face_recognition'
+            ? 'good'
+            : h.source === 'manual_override'
+              ? 'info'
+              : 'warn';
+          const sourceLabel = h.source === 'face_recognition'
+            ? 'Face'
+            : h.source === 'manual_override'
+              ? 'Manual'
+              : '-';
+          return `<tr>
+            <td>${sessionTs ? formatDate(sessionTs) : '–'}</td>
+            <td style="font-family:var(--mono);font-size:12px">${sessionTs ? formatTime(sessionTs) : '–'}</td>
+            <td style="font-family:var(--mono);font-size:12px">${h.lecture_id ?? '–'}</td>
+            <td style="font-weight:500">${h.course_name || h.course_id || '-'}</td>
+            <td style="font-family:var(--mono);font-size:11px;color:var(--muted)">${h.classroom_id || '–'}</td>
+            <td><span class="badge ${status === 'present' ? 'good' : 'danger'}">${status === 'present' ? 'Present' : 'Absent'}</span></td>
+            <td style="font-size:11px;color:var(--muted)">${markedTs ? (formatDate(markedTs) + ' ' + formatTime(markedTs)) : 'Not marked'}</td>
+            <td><span class="badge ${sourceClass}">${sourceLabel}</span></td>
+            <td><button class="btn btn-ghost dispute-prefill" style="padding:2px 8px;font-size:10px" data-course-id="${h.course_id || ''}" data-lecture-id="${h.lecture_id || ''}" data-status="${status}">Raise dispute</button></td>
+          </tr>`;
+        }).join('')
+      : '<tr><td colspan="9"><div class="empty-state"><p>No lecture sessions found</p></div></td></tr>';
+
+    body.querySelectorAll('.dispute-prefill').forEach(btn => {
+      btn.addEventListener('click', () => {
+        prefillDispute(btn.dataset.courseId, btn.dataset.lectureId, btn.dataset.status);
+      });
+    });
   } catch(e) { toast('Failed to load history', 'error'); }
+}
+
+function prefillDispute(courseId, lectureId, attendanceStatus) {
+  showSection('disputes');
+  document.getElementById('dispute-course').value = courseId || '';
+  document.getElementById('dispute-lecture').value = lectureId || '';
+  const reasonInput = document.getElementById('dispute-reason');
+  if (!reasonInput.value && attendanceStatus === 'absent') {
+    reasonInput.value = 'I was present but marked absent for this lecture.';
+  }
+  reasonInput.focus();
+}
+
+async function raiseDispute() {
+  const courseId = document.getElementById('dispute-course').value.trim() || null;
+  const lectureRaw = document.getElementById('dispute-lecture').value.trim();
+  const lectureId = lectureRaw ? parseInt(lectureRaw, 10) : null;
+  const reason = document.getElementById('dispute-reason').value.trim();
+  const evidence = document.getElementById('dispute-evidence').value.trim() || null;
+
+  if (!reason) {
+    toast('Please provide a reason', 'warn');
+    return;
+  }
+
+  try {
+    await api.post('/attendance/disputes', {
+      student_id: user.id,
+      course_id: courseId,
+      lecture_id: Number.isNaN(lectureId) ? null : lectureId,
+      reason,
+      evidence,
+    });
+    toast('Dispute submitted successfully', 'success');
+    ['dispute-lecture', 'dispute-reason', 'dispute-evidence'].forEach(id => {
+      document.getElementById(id).value = '';
+    });
+    await loadDisputes();
+  } catch (e) {
+    toast('Failed to submit dispute: ' + e.message, 'error');
+  }
+}
+
+async function loadDisputes() {
+  try {
+    const rows = await api.get('/attendance/disputes/student/' + user.id + '?limit=100');
+    document.getElementById('disputes-body').innerHTML = rows.length
+      ? rows.map(r => `<tr>
+          <td style="font-family:var(--mono)">${r.dispute_id}</td>
+          <td>${r.course_name || r.course_id || '-'}</td>
+          <td style="font-family:var(--mono)">${r.lecture_id || '-'}</td>
+          <td style="max-width:260px">${r.reason || '-'}</td>
+          <td><span class="badge ${r.status === 'approved' ? 'good' : r.status === 'rejected' ? 'danger' : 'info'}">${r.status}</span></td>
+          <td style="font-size:11px;color:var(--muted)">${r.reviewed_at ? (formatDate(r.reviewed_at) + ' ' + formatTime(r.reviewed_at)) : '-'}</td>
+        </tr>`).join('')
+      : '<tr><td colspan="6"><div class="empty-state"><p>No disputes raised yet</p></div></td></tr>';
+  } catch (e) {
+    document.getElementById('disputes-body').innerHTML = '<tr><td colspan="6"><div class="empty-state"><p>Unable to load disputes</p></div></td></tr>';
+  }
+}
+
+async function changePassword() {
+  const currentPassword = prompt('Enter current password');
+  if (!currentPassword) return;
+  const newPassword = prompt('Enter new password (min 6 chars)');
+  if (!newPassword) return;
+  const confirmPassword = prompt('Confirm new password');
+  if (newPassword !== confirmPassword) {
+    toast('Password confirmation does not match', 'error');
+    return;
+  }
+
+  try {
+    await api.post('/auth/change-password', {
+      role: 'student',
+      user_id: user.id,
+      current_password: currentPassword,
+      new_password: newPassword,
+    });
+    toast('Password updated', 'success');
+  } catch (e) {
+    toast('Password update failed: ' + e.message, 'error');
+  }
 }
 
 loadDashboard();

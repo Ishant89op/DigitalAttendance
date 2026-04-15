@@ -17,7 +17,7 @@ from config.settings import api as api_cfg
 from core.database import init_pool, close_pool
 from core.recognition_manager import cleanup_dead_sessions, stop_all
 from migrations.schema import run_migrations
-from api.routers import lecture, attendance, analytics, admin
+from api.routers import lecture, attendance, analytics, admin, auth
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +65,7 @@ app.include_router(lecture.router)
 app.include_router(attendance.router)
 app.include_router(analytics.router)
 app.include_router(admin.router)
+app.include_router(auth.router)
 
 
 @app.get("/", tags=["Health"])

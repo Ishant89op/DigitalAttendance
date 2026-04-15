@@ -112,6 +112,7 @@
   <div class="topbar">
     <span class="topbar-title" id="page-title">Dashboard</span>
     <div class="topbar-right">
+      <button class="btn btn-ghost" style="padding:6px 10px;font-size:11px" onclick="changePassword()">Change Password</button>
       <span class="live-dot">Live</span>
       <span id="clock" style="font-family:var(--mono);font-size:12px;color:var(--muted)"></span>
     </div>
@@ -144,6 +145,55 @@
           <div class="panel-header"><span class="panel-title">Department Overview</span></div>
           <div class="panel-body" id="dept-overview">
             <div class="empty-state"><p>Loading…</p></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="two-col" style="margin-top:18px">
+        <div class="panel">
+          <div class="panel-header">
+            <span class="panel-title">Reminder Queue</span>
+            <div style="display:flex;gap:8px;align-items:center">
+              <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)">
+                <input id="reminder-force" type="checkbox">
+                Force refresh
+              </label>
+              <button class="btn btn-ghost" onclick="generateReminders()">Generate</button>
+              <button class="btn btn-ghost" onclick="loadReminders()">↻</button>
+              <button class="btn btn-primary" onclick="markSelectedRemindersSent()">Mark Sent</button>
+            </div>
+          </div>
+          <div style="overflow-x:auto">
+            <table class="data-table">
+              <thead><tr><th></th><th>ID</th><th>Student</th><th>Attendance</th><th>Status</th><th>Created</th></tr></thead>
+              <tbody id="reminders-body">
+                <tr><td colspan="6"><div class="empty-state"><p>Loading…</p></div></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header"><span class="panel-title">Risk Forecast</span></div>
+          <div class="panel-body" id="admin-risk-body">
+            <div class="empty-state"><p>Loading…</p></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:18px">
+        <div class="panel-header"><span class="panel-title">Smart Export</span></div>
+        <div class="panel-body">
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px">
+            <div class="form-group" style="margin:0"><label>Course ID</label><input id="export-course" placeholder="Optional"></div>
+            <div class="form-group" style="margin:0"><label>Department</label><input id="export-dept" placeholder="Optional"></div>
+            <div class="form-group" style="margin:0"><label>Semester</label><input id="export-sem" type="number" min="1" max="12" placeholder="Optional"></div>
+            <div class="form-group" style="margin:0"><label>From Date</label><input id="export-from" type="date"></div>
+            <div class="form-group" style="margin:0"><label>To Date</label><input id="export-to" type="date"></div>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+            <button class="btn btn-ghost" onclick="downloadAdminExport('excel')">Download Excel</button>
+            <button class="btn btn-primary" onclick="downloadAdminExport('pdf')">Download PDF</button>
           </div>
         </div>
       </div>
@@ -243,9 +293,9 @@
           </div>
           <div class="grid-wrap">
             <table class="data-table">
-              <thead><tr><th>Teacher ID</th><th>Name</th><th>Department</th><th>Email</th></tr></thead>
+              <thead><tr><th>Teacher ID</th><th>Name</th><th>Department</th><th>Email</th><th>Actions</th></tr></thead>
               <tbody id="teachers-body">
-                <tr><td colspan="4"><div class="empty-state"><p>Loading…</p></div></td></tr>
+                <tr><td colspan="5"><div class="empty-state"><p>Loading…</p></div></td></tr>
               </tbody>
             </table>
           </div>
@@ -421,9 +471,152 @@ async function loadDashboard() {
             <span class="progress-pct ${pctClass(dpt.avg_pct||0)}">${(dpt.avg_pct||0).toFixed(1)}%</span>
           </div>`).join('')
       : '<div class="empty-state"><p>No data yet</p></div>';
+
+    await Promise.all([loadReminders(), loadAdminRiskForecast()]);
   } catch(e) {
     toast('Dashboard load failed: ' + e.message, 'error');
   }
+}
+
+async function changePassword() {
+  const currentPassword = prompt('Enter current admin password');
+  if (!currentPassword) return;
+  const newPassword = prompt('Enter new password (min 6 chars)');
+  if (!newPassword) return;
+  const confirmPassword = prompt('Confirm new password');
+  if (newPassword !== confirmPassword) {
+    toast('Password confirmation does not match', 'error');
+    return;
+  }
+
+  try {
+    await api.post('/auth/change-password', {
+      role: 'admin',
+      user_id: user.id,
+      current_password: currentPassword,
+      new_password: newPassword,
+    });
+    toast('Admin password updated', 'success');
+  } catch (e) {
+    toast('Password update failed: ' + e.message, 'error');
+  }
+}
+
+async function resetUserPassword(targetRole, targetUserId) {
+  const adminPassword = prompt('Enter your admin password to authorize reset');
+  if (!adminPassword) return;
+  const newPassword = prompt(`New password for ${targetRole} ${targetUserId}`);
+  if (!newPassword) return;
+
+  try {
+    await api.post('/auth/reset-password', {
+      admin_id: user.id,
+      admin_password: adminPassword,
+      target_role: targetRole,
+      target_user_id: targetUserId,
+      new_password: newPassword,
+    });
+    toast(`Password reset for ${targetUserId}`, 'success');
+  } catch (e) {
+    toast('Reset failed: ' + e.message, 'error');
+  }
+}
+
+async function generateReminders() {
+  try {
+    const force = document.getElementById('reminder-force')?.checked ? 'true' : 'false';
+    const result = await api.post('/analytics/admin/reminders/generate?force=' + force);
+    toast(`Reminders generated. Inserted ${result.inserted}, updated ${result.updated}`, 'success');
+    await loadReminders();
+  } catch (e) {
+    toast('Failed to generate reminders: ' + e.message, 'error');
+  }
+}
+
+async function loadReminders() {
+  try {
+    const rows = await api.get('/analytics/admin/reminders?limit=200');
+    const body = document.getElementById('reminders-body');
+    if (!rows.length) {
+      body.innerHTML = '<tr><td colspan="6"><div class="empty-state"><p>No reminders generated yet</p></div></td></tr>';
+      return;
+    }
+
+    body.innerHTML = rows.map(r => `
+      <tr>
+        <td><input type="checkbox" class="reminder-check" value="${r.reminder_id}" ${r.status === 'sent' ? 'disabled' : ''}></td>
+        <td style="font-family:var(--mono)">${r.reminder_id}</td>
+        <td>
+          <div style="font-weight:500">${r.student_name}</div>
+          <div style="font-family:var(--mono);font-size:11px;color:var(--muted)">${r.student_id} · ${r.course_id}</div>
+        </td>
+        <td>${pctBadge(parseFloat(r.percentage) || 0)}</td>
+        <td><span class="badge ${r.status === 'sent' ? 'good' : 'info'}">${r.status}</span></td>
+        <td style="font-family:var(--mono);font-size:11px">${formatDate(r.created_at)} ${formatTime(r.created_at)}</td>
+      </tr>
+    `).join('');
+  } catch (e) {
+    document.getElementById('reminders-body').innerHTML = '<tr><td colspan="6"><div class="empty-state"><p>Failed to load reminders</p></div></td></tr>';
+  }
+}
+
+async function markSelectedRemindersSent() {
+  const ids = Array.from(document.querySelectorAll('.reminder-check:checked')).map(el => parseInt(el.value, 10));
+  try {
+    const result = await api.post('/analytics/admin/reminders/mark-sent', { reminder_ids: ids.length ? ids : null });
+    toast(`Marked ${result.updated} reminder(s) as sent`, 'success');
+    await loadReminders();
+  } catch (e) {
+    toast('Failed to mark reminders: ' + e.message, 'error');
+  }
+}
+
+async function loadAdminRiskForecast() {
+  try {
+    const rows = await api.get('/analytics/admin/risk-forecast?limit=20');
+    const body = document.getElementById('admin-risk-body');
+    if (!rows.length) {
+      body.innerHTML = '<div class="empty-state"><p>No risk data available</p></div>';
+      return;
+    }
+
+    body.innerHTML = rows.map(r => `
+      <div class="progress-row" style="align-items:flex-start;gap:12px">
+        <div style="min-width:160px">
+          <div style="font-weight:500;color:var(--text)">${r.name}</div>
+          <div style="font-family:var(--mono);font-size:11px;color:var(--muted)">${r.student_id} · ${r.department} · Sem ${r.semester}</div>
+        </div>
+        <div class="progress-track">
+          <div class="progress-fill ${pctClass(r.projected_percentage)}" style="width:${Math.min(r.projected_percentage,100)}%"></div>
+        </div>
+        <span class="progress-pct ${pctClass(r.projected_percentage)}">${r.projected_percentage}%</span>
+      </div>
+    `).join('');
+  } catch (e) {
+    document.getElementById('admin-risk-body').innerHTML = '<div class="empty-state"><p>Forecast unavailable</p></div>';
+  }
+}
+
+function downloadAdminExport(format) {
+  const courseId = document.getElementById('export-course').value.trim();
+  const department = document.getElementById('export-dept').value.trim();
+  const semester = document.getElementById('export-sem').value.trim();
+  const fromDate = document.getElementById('export-from').value;
+  const toDate = document.getElementById('export-to').value;
+
+  const params = new URLSearchParams({ format });
+  if (courseId) params.set('course_id', courseId);
+  if (department) params.set('department', department);
+  if (semester) params.set('semester', semester);
+  if (fromDate) params.set('from_date', fromDate);
+  if (toDate) params.set('to_date', toDate);
+
+  const link = document.createElement('a');
+  link.href = `${API}/analytics/admin/export?${params.toString()}`;
+  link.target = '_blank';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
 }
 
 // ── STUDENTS ─────────────────────────────────────────────────────
@@ -450,6 +643,7 @@ async function loadStudents() {
           <td>
             <div class="row-actions">
               <button class="btn btn-primary row-save-btn" style="padding:4px 10px;font-size:11px" onclick="saveStudent('${s.student_id}')">Save</button>
+              <button class="btn btn-ghost" style="padding:4px 10px;font-size:11px" onclick="resetUserPassword('student','${s.student_id}')">Reset Password</button>
               <button class="btn btn-ghost" style="padding:4px 10px;font-size:11px" onclick="deleteStudent('${s.student_id}','${s.name}')">Delete</button>
             </div>
           </td>
@@ -517,8 +711,9 @@ async function loadTeachers() {
           <td style="font-weight:500">${t.name}</td>
           <td>${t.department}</td>
           <td style="font-size:12px;color:var(--muted)">${t.email||'–'}</td>
+          <td><button class="btn btn-ghost" style="padding:4px 10px;font-size:11px" onclick="resetUserPassword('teacher','${t.teacher_id}')">Reset Password</button></td>
         </tr>`).join('')
-      : '<tr><td colspan="4"><div class="empty-state"><p>No teachers found</p></div></td></tr>';
+      : '<tr><td colspan="5"><div class="empty-state"><p>No teachers found</p></div></td></tr>';
   } catch(e) { toast('Failed to load teachers', 'error'); }
 }
 

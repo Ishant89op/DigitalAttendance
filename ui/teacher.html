@@ -110,6 +110,67 @@
     color: var(--muted);
     margin-top: 1px;
   }
+  .manual-controls-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: 12px;
+    align-items: end;
+  }
+  .manual-actions-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-top: 12px;
+  }
+  .manual-students-list {
+    margin-top: 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    max-height: 320px;
+    overflow: auto;
+    background: var(--surface);
+  }
+  .manual-student-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .manual-student-row:last-child {
+    border-bottom: 0;
+  }
+  .manual-student-left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+  }
+  .manual-student-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .manual-student-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    line-height: 1.2;
+  }
+  .manual-student-id {
+    font-size: 11px;
+    color: var(--muted);
+    font-family: var(--mono);
+    line-height: 1.2;
+  }
+  .manual-empty {
+    padding: 14px;
+    font-size: 12px;
+    color: var(--muted);
+  }
 </style>
 </head>
 <body>
@@ -118,6 +179,7 @@
   <div class="topbar">
     <span class="topbar-title" id="page-title">Course Records</span>
     <div class="topbar-right">
+      <button class="btn btn-ghost" style="padding:6px 10px;font-size:11px" onclick="changePassword()">Change Password</button>
       <span class="live-dot">Live</span>
       <span id="clock" style="font-family:var(--mono);font-size:12px;color:var(--muted)"></span>
     </div>
@@ -214,6 +276,100 @@
               </tr>
             </thead>
             <tbody id="lecture-history-body">
+              <tr><td colspan="6"><div class="empty-state"><p>Select a course first</p></div></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div id="section-manual" style="display:none">
+      <div class="panel" style="margin-bottom:18px">
+        <div class="panel-header">
+          <span class="panel-title">Selected Course</span>
+          <button class="btn btn-ghost" onclick="showSection('courses'); activateNav(0)">Change Course</button>
+        </div>
+        <div class="panel-body">
+          <div id="manual-course-summary" class="muted-note">Select a course in Course Records first.</div>
+        </div>
+      </div>
+
+      <div class="panel" id="manual-attendance-panel" onkeydown="handleManualPanelKeydown(event)">
+        <div class="panel-header">
+          <span class="panel-title">Manual Attendance Update</span>
+          <span class="badge info" id="manual-selected-badge">0 selected</span>
+        </div>
+        <div class="panel-body">
+          <div class="manual-controls-grid">
+            <div class="form-group" style="margin:0">
+              <label>Previous Lecture</label>
+              <select id="manual-lecture-select" onchange="refreshManualAttendancePanel(true)">
+                <option value="">Select lecture</option>
+              </select>
+            </div>
+            <div class="form-group" style="margin:0">
+              <label>Student List</label>
+              <select id="manual-scope" onchange="renderManualStudentPicker()">
+                <option value="absent">Only absentees</option>
+                <option value="all">All students</option>
+              </select>
+            </div>
+            <div class="form-group" style="margin:0">
+              <label>Update Action</label>
+              <select id="manual-action">
+                <option value="present">Mark selected as present</option>
+                <option value="absent">Mark selected as absent</option>
+              </select>
+            </div>
+            <div class="form-group" style="margin:0">
+              <label>Search Student</label>
+              <input id="manual-student-search" class="search-input" style="max-width:none" placeholder="Search by ID or name" oninput="renderManualStudentPicker()">
+            </div>
+          </div>
+
+          <div class="manual-actions-row">
+            <button class="btn btn-ghost" onclick="selectAllManualVisible()">Select Visible</button>
+            <button class="btn btn-ghost" onclick="clearManualSelection()">Clear Selection</button>
+            <button class="btn btn-primary" id="manual-apply-btn" onclick="applyManualAttendance()">Apply Update</button>
+            <span class="muted-note" style="margin:0">Press Enter inside this panel to apply quickly.</span>
+          </div>
+
+          <div id="manual-students-list" class="manual-students-list">
+            <div class="manual-empty">Select a course and lecture to manually update attendance.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="section-disputes" style="display:none">
+      <div class="panel" style="margin-bottom:18px">
+        <div class="panel-header">
+          <span class="panel-title">Selected Course</span>
+          <button class="btn btn-ghost" onclick="showSection('courses'); activateNav(0)">Change Course</button>
+        </div>
+        <div class="panel-body">
+          <div id="disputes-course-summary" class="muted-note">Select a course in Course Records first.</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">Dispute Queue (Selected Course)</span>
+          <button class="btn btn-ghost" onclick="loadDisputeQueue()">↻ Refresh</button>
+        </div>
+        <div style="overflow-x:auto">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Student</th>
+                <th>Lecture</th>
+                <th>Reason</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="disputes-queue-body">
               <tr><td colspan="6"><div class="empty-state"><p>Select a course first</p></div></td></tr>
             </tbody>
           </table>
@@ -318,21 +474,48 @@ let dashboardData = null;
 let teacherCourses = [];
 let selectedCourseId = null;
 let currentCourseDetail = null;
+let manualLectureId = null;
+let manualPresentSet = new Set();
+let manualSelectedSet = new Set();
 
 initSidebar('teacher', user.name, user.id, [
   { icon: '[]', label: 'Course Records', active: true, onclick: "showSection('courses', event)" },
+  { icon: '✎', label: 'Manual Attendance', active: false, onclick: "showSection('manual', event)" },
+  { icon: '⚑', label: 'Disputes', active: false, onclick: "showSection('disputes', event)" },
   { icon: '>>', label: 'Session Control', active: false, onclick: "showSection('session', event)" },
 ]);
 
 startClock('clock');
 
 function showSection(name, e) {
-  ['courses', 'session'].forEach(section => {
+  ['courses', 'manual', 'disputes', 'session'].forEach(section => {
     document.getElementById('section-' + section).style.display = section === name ? '' : 'none';
   });
-  document.getElementById('page-title').textContent = name === 'courses' ? 'Course Records' : 'Session Control';
+  const titles = {
+    courses: 'Course Records',
+    manual: 'Manual Attendance',
+    disputes: 'Disputes',
+    session: 'Session Control',
+  };
+  document.getElementById('page-title').textContent = titles[name] || 'Teacher Dashboard';
   document.querySelectorAll('.nav-item').forEach(item => item.classList.remove('active'));
   if (e && e.target) e.target.closest('.nav-item').classList.add('active');
+
+  if (name === 'manual') refreshManualAttendancePanel(false);
+  if (name === 'disputes') loadDisputeQueue();
+}
+
+function updateSelectedCourseSummaries() {
+  const course = currentCourseDetail?.course;
+  const text = course
+    ? `${course.course_id} - ${course.course_name} (${course.department}, Sem ${course.semester})`
+    : 'Select a course in Course Records first.';
+
+  const manual = document.getElementById('manual-course-summary');
+  if (manual) manual.textContent = text;
+
+  const disputes = document.getElementById('disputes-course-summary');
+  if (disputes) disputes.textContent = text;
 }
 
 function activateNav(index) {
@@ -382,6 +565,8 @@ async function loadCourseDashboard(preserveSelection = true) {
       renderCourseOverview();
       renderStudentTable();
       renderLectureHistory();
+      renderManualAttendancePanelEmpty();
+      updateSelectedCourseSummaries();
     }
   } catch (error) {
     toast('Failed to load teacher dashboard: ' + error.message, 'error');
@@ -443,6 +628,9 @@ async function selectCourse(courseId, rerenderList = true) {
     renderCourseOverview();
     renderStudentTable();
     renderLectureHistory();
+    updateSelectedCourseSummaries();
+    await refreshManualAttendancePanel(true);
+    await loadDisputeQueue();
   } catch (error) {
     toast('Failed to load course detail: ' + error.message, 'error');
   }
@@ -476,6 +664,8 @@ function renderCourseOverview() {
         </div>
       </div>
       <div class="toolbar-actions">
+        <input id="export-from" type="date" class="btn btn-ghost" style="padding:6px 10px;font-size:11px;min-width:140px" title="From date">
+        <input id="export-to" type="date" class="btn btn-ghost" style="padding:6px 10px;font-size:11px;min-width:140px" title="To date">
         <button class="btn btn-ghost" onclick="openSessionForSelectedCourse()">Open Session</button>
         <button class="btn btn-ghost" onclick="downloadReport('excel')">Download Excel</button>
         <button class="btn btn-primary" onclick="downloadReport('pdf')">Download PDF</button>
@@ -566,6 +756,225 @@ function renderLectureHistory() {
   `).join('');
 }
 
+function renderManualAttendancePanelEmpty(message = 'Select a course and lecture to manually update attendance.') {
+  const lectureSelect = document.getElementById('manual-lecture-select');
+  const list = document.getElementById('manual-students-list');
+  const badge = document.getElementById('manual-selected-badge');
+  if (lectureSelect) {
+    lectureSelect.innerHTML = '<option value="">No lectures</option>';
+    lectureSelect.value = '';
+  }
+  if (list) {
+    list.innerHTML = `<div class="manual-empty">${message}</div>`;
+  }
+  if (badge) {
+    badge.textContent = '0 selected';
+  }
+  manualLectureId = null;
+  manualPresentSet = new Set();
+  manualSelectedSet = new Set();
+}
+
+function manualLectureLabel(lecture) {
+  const when = lecture.start_time
+    ? `${formatDate(lecture.start_time)} ${formatTime(lecture.start_time)}`
+    : `Lecture ${lecture.lecture_id}`;
+  const room = lecture.classroom_id || 'Room -';
+  const state = lecture.status === 'active' ? 'Active' : 'Closed';
+  return `#${lecture.lecture_id} | ${when} | ${room} | ${state}`;
+}
+
+async function refreshManualAttendancePanel(resetSelection = false) {
+  if (!currentCourseDetail) {
+    renderManualAttendancePanelEmpty();
+    return;
+  }
+
+  const lectureSelect = document.getElementById('manual-lecture-select');
+  const lectures = (currentCourseDetail.recent_lectures || [])
+    .filter(lecture => lecture.status === 'closed' || lecture.status === 'active');
+
+  if (!lectures.length) {
+    renderManualAttendancePanelEmpty('No lectures available for manual update yet.');
+    return;
+  }
+
+  const previousValue = lectureSelect.value;
+  lectureSelect.innerHTML = lectures.map(lecture =>
+    `<option value="${lecture.lecture_id}">${manualLectureLabel(lecture)}</option>`
+  ).join('');
+
+  if (previousValue && lectures.some(lecture => String(lecture.lecture_id) === previousValue)) {
+    lectureSelect.value = previousValue;
+  } else {
+    lectureSelect.value = String(lectures[0].lecture_id);
+  }
+
+  manualLectureId = parseInt(lectureSelect.value, 10);
+  if (Number.isNaN(manualLectureId)) {
+    renderManualAttendancePanelEmpty('Pick a lecture to load students.');
+    return;
+  }
+
+  try {
+    const presentRows = await api.get('/attendance/list/' + manualLectureId);
+    manualPresentSet = new Set((presentRows || []).map(row => String(row.student_id)));
+    if (resetSelection) {
+      manualSelectedSet = new Set();
+    }
+    renderManualStudentPicker();
+  } catch (error) {
+    renderManualAttendancePanelEmpty('Unable to load students for this lecture.');
+    toast('Manual list load failed: ' + error.message, 'error');
+  }
+}
+
+function getManualCandidateStudents() {
+  const students = currentCourseDetail?.students || [];
+  const scope = document.getElementById('manual-scope').value;
+  const query = document.getElementById('manual-student-search').value.trim().toLowerCase();
+
+  return students.filter(student => {
+    const id = String(student.student_id);
+    const isAbsent = !manualPresentSet.has(id);
+    if (scope === 'absent' && !isAbsent) return false;
+
+    if (!query) return true;
+    const haystack = `${student.student_id} ${student.name || ''}`.toLowerCase();
+    return haystack.includes(query);
+  });
+}
+
+function updateManualSelectedBadge() {
+  document.getElementById('manual-selected-badge').textContent = `${manualSelectedSet.size} selected`;
+}
+
+function toggleManualStudent(studentId, checked) {
+  if (checked) {
+    manualSelectedSet.add(String(studentId));
+  } else {
+    manualSelectedSet.delete(String(studentId));
+  }
+  updateManualSelectedBadge();
+}
+
+function renderManualStudentPicker() {
+  const list = document.getElementById('manual-students-list');
+  if (!currentCourseDetail) {
+    renderManualAttendancePanelEmpty();
+    return;
+  }
+
+  const students = getManualCandidateStudents();
+  if (!students.length) {
+    list.innerHTML = '<div class="manual-empty">No students matched this filter.</div>';
+    updateManualSelectedBadge();
+    return;
+  }
+
+  list.innerHTML = students.map(student => {
+    const studentId = String(student.student_id);
+    const isPresent = manualPresentSet.has(studentId);
+    const checked = manualSelectedSet.has(studentId) ? 'checked' : '';
+    return `
+      <div class="manual-student-row">
+        <div class="manual-student-left">
+          <input type="checkbox" data-student-id="${studentId}" ${checked}>
+          <div class="manual-student-meta">
+            <span class="manual-student-name">${student.name || studentId}</span>
+            <span class="manual-student-id">${studentId}</span>
+          </div>
+        </div>
+        <span class="badge ${isPresent ? 'good' : 'danger'}">${isPresent ? 'Present' : 'Absent'}</span>
+      </div>
+    `;
+  }).join('');
+
+  list.querySelectorAll('input[data-student-id]').forEach(input => {
+    input.addEventListener('change', () => {
+      toggleManualStudent(input.dataset.studentId, input.checked);
+    });
+  });
+
+  updateManualSelectedBadge();
+}
+
+function selectAllManualVisible() {
+  const students = getManualCandidateStudents();
+  students.forEach(student => manualSelectedSet.add(String(student.student_id)));
+  renderManualStudentPicker();
+}
+
+function clearManualSelection() {
+  manualSelectedSet = new Set();
+  renderManualStudentPicker();
+}
+
+function handleManualPanelKeydown(event) {
+  if (event.key !== 'Enter') return;
+  if (!document.getElementById('section-manual') || document.getElementById('section-manual').style.display === 'none') return;
+  event.preventDefault();
+  applyManualAttendance();
+}
+
+async function applyManualAttendance() {
+  if (!currentCourseDetail) {
+    toast('Select a course first', 'warn');
+    return;
+  }
+
+  const lectureId = parseInt(document.getElementById('manual-lecture-select').value, 10);
+  if (Number.isNaN(lectureId)) {
+    toast('Select a lecture first', 'warn');
+    return;
+  }
+
+  const selectedIds = Array.from(manualSelectedSet);
+  if (!selectedIds.length) {
+    toast('Select at least one student', 'warn');
+    return;
+  }
+
+  const present = document.getElementById('manual-action').value === 'present';
+  const button = document.getElementById('manual-apply-btn');
+  if (button.disabled) return;
+  const originalLabel = button.textContent;
+  button.disabled = true;
+  button.textContent = 'Updating...';
+
+  try {
+    const results = await Promise.allSettled(
+      selectedIds.map(studentId => api.post('/attendance/override', {
+        student_id: studentId,
+        lecture_id: lectureId,
+        teacher_id: user.id,
+        present,
+      }))
+    );
+
+    const successCount = results.filter(result => result.status === 'fulfilled').length;
+    const failedCount = results.length - successCount;
+
+    if (successCount) {
+      toast(`Updated ${successCount} student(s).`, 'success');
+    }
+    if (failedCount) {
+      toast(`${failedCount} update(s) failed.`, 'warn');
+    }
+
+    manualSelectedSet = new Set();
+    await selectCourse(selectedCourseId, false);
+    if (activeLectureId === lectureId) {
+      await pollLive();
+    }
+  } catch (error) {
+    toast('Manual update failed: ' + error.message, 'error');
+  } finally {
+    button.disabled = false;
+    button.textContent = originalLabel;
+  }
+}
+
 function populateSessionCourses() {
   const select = document.getElementById('course-select');
   const currentValue = select.value;
@@ -585,7 +994,7 @@ function openSessionForSelectedCourse() {
   }
   document.getElementById('course-select').value = selectedCourseId;
   showSection('session');
-  activateNav(1);
+  activateNav(3);
 }
 
 function downloadReport(format) {
@@ -593,13 +1002,94 @@ function downloadReport(format) {
     toast('Select a course first', 'warn');
     return;
   }
-  const url = `${API}/analytics/teacher/${encodeURIComponent(user.id)}/courses/${encodeURIComponent(selectedCourseId)}/export?format=${format}`;
+  const fromDate = document.getElementById('export-from')?.value || '';
+  const toDate = document.getElementById('export-to')?.value || '';
+
+  const params = new URLSearchParams({ format });
+  if (fromDate) params.set('from_date', fromDate);
+  if (toDate) params.set('to_date', toDate);
+
+  const url = `${API}/analytics/teacher/${encodeURIComponent(user.id)}/courses/${encodeURIComponent(selectedCourseId)}/export?${params.toString()}`;
   const link = document.createElement('a');
   link.href = url;
   link.target = '_blank';
   document.body.appendChild(link);
   link.click();
   link.remove();
+}
+
+async function loadDisputeQueue() {
+  const body = document.getElementById('disputes-queue-body');
+  if (!selectedCourseId) {
+    body.innerHTML = '<tr><td colspan="6"><div class="empty-state"><p>Select a course first</p></div></td></tr>';
+    return;
+  }
+
+  try {
+    const rows = await api.get('/attendance/disputes?course_id=' + encodeURIComponent(selectedCourseId) + '&limit=100');
+    if (!rows.length) {
+      body.innerHTML = '<tr><td colspan="6"><div class="empty-state"><p>No disputes for this course</p></div></td></tr>';
+      return;
+    }
+
+    body.innerHTML = rows.map(r => `
+      <tr>
+        <td style="font-family:var(--mono)">${r.dispute_id}</td>
+        <td>${r.student_name || r.student_id}</td>
+        <td style="font-family:var(--mono)">${r.lecture_id || '-'}</td>
+        <td style="max-width:220px">${r.reason || '-'}</td>
+        <td><span class="badge ${r.status === 'approved' ? 'good' : r.status === 'rejected' ? 'danger' : 'info'}">${r.status}</span></td>
+        <td>
+          ${r.status === 'open'
+            ? `<button class="btn btn-ghost" style="padding:4px 8px;font-size:11px" onclick="resolveDispute(${r.dispute_id}, 'approved')">Approve</button>
+               <button class="btn btn-ghost" style="padding:4px 8px;font-size:11px" onclick="resolveDispute(${r.dispute_id}, 'rejected')">Reject</button>`
+            : '<span style="font-size:11px;color:var(--muted)">Reviewed</span>'}
+        </td>
+      </tr>
+    `).join('');
+  } catch (error) {
+    body.innerHTML = '<tr><td colspan="6"><div class="empty-state"><p>Failed to load disputes</p></div></td></tr>';
+  }
+}
+
+async function resolveDispute(disputeId, status) {
+  const reviewNote = prompt(`Optional review note for ${status}:`) || null;
+  try {
+    await api.post('/attendance/disputes/' + disputeId + '/resolve', {
+      reviewer_id: user.id,
+      reviewer_role: 'teacher',
+      action: status,
+      resolution_note: reviewNote,
+    });
+    toast('Dispute updated', 'success');
+    await loadDisputeQueue();
+  } catch (error) {
+    toast('Failed to update dispute: ' + error.message, 'error');
+  }
+}
+
+async function changePassword() {
+  const currentPassword = prompt('Enter current password');
+  if (!currentPassword) return;
+  const newPassword = prompt('Enter new password (min 6 chars)');
+  if (!newPassword) return;
+  const confirmPassword = prompt('Confirm new password');
+  if (newPassword !== confirmPassword) {
+    toast('Password confirmation does not match', 'error');
+    return;
+  }
+
+  try {
+    await api.post('/auth/change-password', {
+      role: 'teacher',
+      user_id: user.id,
+      current_password: currentPassword,
+      new_password: newPassword,
+    });
+    toast('Password updated', 'success');
+  } catch (error) {
+    toast('Password update failed: ' + error.message, 'error');
+  }
 }
 
 async function checkActive() {
@@ -720,9 +1210,11 @@ function onLectureEnded(resetBadge = true) {
 }
 
 async function pollLive() {
-  if (!activeLectureId) return;
+  const lectureId = activeLectureId;
+  if (!lectureId) return;
   try {
-    const snapshot = await api.get('/lecture/' + activeLectureId + '/live');
+    const snapshot = await api.get('/lecture/' + lectureId + '/live');
+    if (activeLectureId !== lectureId) return;
     document.getElementById('stat-present').textContent = snapshot.present;
     document.getElementById('stat-absent').textContent = snapshot.absent;
     document.getElementById('stat-pct').textContent = snapshot.percentage + '%';
@@ -730,7 +1222,8 @@ async function pollLive() {
     document.getElementById('present-count').textContent = snapshot.present;
     document.getElementById('absent-count').textContent = snapshot.absent;
 
-    const presentList = await api.get('/attendance/list/' + activeLectureId);
+    const presentList = await api.get('/attendance/list/' + lectureId);
+    if (activeLectureId !== lectureId) return;
     document.getElementById('present-body').innerHTML = presentList.length
       ? presentList.map(row => `
           <tr>

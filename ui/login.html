@@ -242,10 +242,10 @@
       <input type="text" id="user-id" placeholder="e.g. 202411052" autocomplete="off">
     </div>
 
-    <div class="field" id="pin-field" style="display:none">
-      <label>Room PIN</label>
-      <input type="password" id="pin" placeholder="Enter 4-digit PIN" maxlength="8">
-      <div class="hint">Default PIN is 1234 — contact admin to change</div>
+    <div class="field">
+      <label id="password-label">Password</label>
+      <input type="password" id="password" placeholder="Enter password" autocomplete="off" maxlength="64">
+      <div class="hint" id="password-hint">Default password is your ID for student/teacher on first login.</div>
     </div>
 
     <button class="btn-login" id="login-btn" onclick="doLogin()">Sign In</button>
@@ -263,10 +263,34 @@
   let currentRole = 'student';
 
   const config = {
-    student:   { label: 'Student ID',   placeholder: 'e.g. 202411052', showPin: false },
-    teacher:   { label: 'Teacher ID',   placeholder: 'e.g. T001',      showPin: false },
-    admin:     { label: 'Admin ID',     placeholder: 'admin',           showPin: false },
-    classroom: { label: 'Classroom ID', placeholder: 'e.g. CR-2113',   showPin: true  },
+    student: {
+      label: 'Student ID',
+      placeholder: 'e.g. 202411052',
+      passwordLabel: 'Password',
+      passwordPlaceholder: 'Enter student password',
+      hint: 'Default password is your Student ID on first login.',
+    },
+    teacher: {
+      label: 'Teacher ID',
+      placeholder: 'e.g. T001',
+      passwordLabel: 'Password',
+      passwordPlaceholder: 'Enter teacher password',
+      hint: 'Default password is your Teacher ID on first login.',
+    },
+    admin: {
+      label: 'Admin ID',
+      placeholder: 'admin',
+      passwordLabel: 'Password',
+      passwordPlaceholder: 'Enter admin password',
+      hint: 'Default admin credentials: admin / admin123',
+    },
+    classroom: {
+      label: 'Classroom ID',
+      placeholder: 'e.g. CR-2113',
+      passwordLabel: 'Room Password',
+      passwordPlaceholder: 'Enter room PIN/password',
+      hint: 'Use the classroom access PIN configured by admin.',
+    },
   };
 
   function setRole(role, el) {
@@ -276,53 +300,51 @@
     const c = config[role];
     document.getElementById('id-label').textContent = c.label;
     document.getElementById('user-id').placeholder  = c.placeholder;
-    document.getElementById('pin-field').style.display = c.showPin ? '' : 'none';
+    document.getElementById('password-label').textContent = c.passwordLabel;
+    document.getElementById('password').placeholder = c.passwordPlaceholder;
+    document.getElementById('password-hint').textContent = c.hint;
     document.getElementById('error').classList.remove('show');
     document.getElementById('user-id').value = '';
-    document.getElementById('pin').value = '';
+    document.getElementById('password').value = '';
   }
 
   async function doLogin() {
-    const id  = document.getElementById('user-id').value.trim();
-    const pin = document.getElementById('pin').value.trim();
-    const btn = document.getElementById('login-btn');
+    const id       = document.getElementById('user-id').value.trim();
+    const password = document.getElementById('password').value;
+    const btn      = document.getElementById('login-btn');
 
     if (!id) { showErr('Please enter your ID.'); return; }
-    if (currentRole === 'classroom' && !pin) { showErr('Please enter the room PIN.'); return; }
+    if (!password) { showErr('Please enter your password.'); return; }
 
     btn.disabled = true;
     btn.textContent = 'Verifying…';
     clearErr();
 
     try {
-      if (currentRole === 'student') {
-        const list = await get('/admin/students');
-        const found = list.find(s => s.student_id === id);
-        if (!found) { showErr('Student ID not found.'); return; }
-        save('student', id, found.name);
-        go('student.html');
-
-      } else if (currentRole === 'teacher') {
-        const list = await get('/admin/teachers');
-        const found = list.find(t => t.teacher_id === id);
-        if (!found) { showErr('Teacher ID not found.'); return; }
-        save('teacher', id, found.name);
-        go('teacher.html');
-
-      } else if (currentRole === 'admin') {
-        if (id !== 'admin') { showErr('Invalid admin credentials.'); return; }
-        save('admin', id, 'Administrator');
-        go('admin.html');
-
-      } else if (currentRole === 'classroom') {
-        // Call classroom login endpoint
-        const res = await post('/lecture/classroom-login', { classroom_id: id, pin });
+      if (currentRole === 'classroom') {
+        const res = await post('/lecture/classroom-login', {
+          classroom_id: id,
+          pin: password,
+        });
         localStorage.setItem('role',         'classroom');
         localStorage.setItem('user_id',      id);
         localStorage.setItem('user_name',    res.room_number || id);
         localStorage.setItem('classroom_id', id);
         localStorage.setItem('building',     res.building || '');
         go('classroom.html');
+      } else {
+        const auth = await post('/auth/login', {
+          role: currentRole,
+          user_id: id,
+          password,
+        });
+        save(auth.role, auth.user_id, auth.name);
+        const pageByRole = {
+          student: 'student.html',
+          teacher: 'teacher.html',
+          admin: 'admin.html',
+        };
+        go(pageByRole[auth.role] || 'login.html');
       }
     } catch(e) {
       showErr(e.message || 'Cannot reach API. Is the server running?');
@@ -330,12 +352,6 @@
       btn.disabled = false;
       btn.textContent = 'Sign In';
     }
-  }
-
-  async function get(path) {
-    const r = await fetch(API + path);
-    if (!r.ok) { const e = await r.json().catch(()=>{}); throw new Error(e?.detail || 'Request failed'); }
-    return r.json();
   }
 
   async function post(path, body) {

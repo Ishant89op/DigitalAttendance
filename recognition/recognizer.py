@@ -107,6 +107,11 @@ def _print_status(classroom_id, lecture_id, present_count, enrolled):
     sys.stdout.flush()
 
 
+def _bbox_center(face) -> tuple[float, float]:
+    x1, y1, x2, y2 = [float(v) for v in face.bbox]
+    return (x1 + x2) / 2.0, (y1 + y2) / 2.0
+
+
 def _draw_frame(frame, faces, face_results, classroom_id, lecture_id, present_count, enrolled):
     display = frame.copy()
     _, w = display.shape[:2]
@@ -183,7 +188,10 @@ async def run_recognition(classroom_id: str) -> None:
             _disable_gui(f"failed to open preview window: {exc}")
 
     lecture_id    = None
+    last_lecture_id = None
     present_today = set()
+    liveness_passed = set()
+    last_face_center = {}
 
     try:
         while True:
@@ -197,10 +205,20 @@ async def run_recognition(classroom_id: str) -> None:
                         lecture_id = session["lecture_id"]
                         present_today.clear()
                         frame_buffer.clear()
+                        liveness_passed.clear()
+                        last_face_center.clear()
                         if session["status"] == "resumed_today":
                             logger.info("Auto-resumed lecture #%d in %s", lecture_id, classroom_id)
                         else:
                             logger.info("Auto-started lecture #%d in %s", lecture_id, classroom_id)
+
+                if lecture_id != last_lecture_id:
+                    frame_buffer.clear()
+                    liveness_passed.clear()
+                    last_face_center.clear()
+                    if lecture_id is not None:
+                        present_today.clear()
+                    last_lecture_id = lecture_id
 
                 ret, frame = cap.read()
                 if not ret:
@@ -234,6 +252,27 @@ async def run_recognition(classroom_id: str) -> None:
                             sid  = known_ids[match.index]
                             name = known_names[match.index]
                             matched_this_frame.add(sid)
+
+                            if cfg.enable_liveness_check and sid not in liveness_passed:
+                                center = _bbox_center(face)
+                                prev_center = last_face_center.get(sid)
+                                last_face_center[sid] = center
+
+                                if prev_center is None:
+                                    frame_buffer[sid] = 0
+                                    face_results.append((name, "Liveness...", (0, 210, 255)))
+                                    continue
+
+                                motion = (
+                                    (center[0] - prev_center[0]) ** 2
+                                    + (center[1] - prev_center[1]) ** 2
+                                ) ** 0.5
+                                if motion < cfg.liveness_min_motion_px:
+                                    frame_buffer[sid] = 0
+                                    face_results.append((name, "Liveness", (255, 170, 0)))
+                                    continue
+
+                                liveness_passed.add(sid)
 
                             if on_cooldown(sid) or sid in present_today:
                                 frame_buffer[sid] = 0

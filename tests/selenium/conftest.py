@@ -357,6 +357,35 @@ MOCK_FETCH_SCRIPT = """
   };
 
   const route = (method, pathname, _search, bodyText) => {
+        if (method === "POST" && pathname === "/auth/login") {
+            const payload = parseBody(bodyText);
+            const role = (payload.role || "").toLowerCase();
+            const userId = payload.user_id;
+            const password = payload.password;
+
+            if (role === "student") {
+                const found = fixtures.students.find((item) => item.student_id === userId);
+                if (found && password === userId) {
+                    return { role: "student", user_id: found.student_id, name: found.name };
+                }
+            }
+
+            if (role === "teacher") {
+                const found = fixtures.teachers.find((item) => item.teacher_id === userId);
+                if (found && password === userId) {
+                    return { role: "teacher", user_id: found.teacher_id, name: found.name };
+                }
+            }
+
+            if (role === "admin") {
+                if (userId === "admin" && password === "admin123") {
+                    return { role: "admin", user_id: "admin", name: "Administrator" };
+                }
+            }
+
+            return { __status: 401, detail: "Invalid ID or password." };
+        }
+
     if (method === "GET" && pathname === "/admin/students") {
       return clone(fixtures.students);
     }

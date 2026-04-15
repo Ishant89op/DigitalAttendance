@@ -1,0 +1,1031 @@
+ATTENDX DETAILED PROJECT REPORT
+Prepared from current workspace source snapshot
+
+============================================================
+1) PROJECT IDENTITY AND PURPOSE
+============================================================
+Project Name:
+- AttendX - Smart Digital Attendance System
+
+Primary Goal:
+- Automate classroom attendance using face recognition, while still allowing controlled manual correction, analytics, dispute handling, and administrative data management.
+
+Primary User Roles:
+- Student
+- Teacher
+- Admin
+- Classroom Device
+
+Core Problem Solved:
+- Replace manual attendance roll calls with camera-based real-time marking.
+- Preserve accuracy with manual override and dispute workflows.
+- Provide transparent analytics and risk tracking to students, teachers, and administrators.
+
+============================================================
+2) HIGH LEVEL ARCHITECTURE
+============================================================
+Technology Stack:
+- Backend API: FastAPI
+- Database: PostgreSQL
+- Async DB driver: asyncpg
+- Recognition: InsightFace + OpenCV + NumPy
+- Frontend: Static HTML/CSS/JavaScript dashboards
+- Test Stack: pytest + Selenium
+
+Architectural Shape:
+- Multi-role web UI (static pages) calls REST API.
+- FastAPI router layer delegates to service layer.
+- Service layer performs SQL-heavy analytics and workflows.
+- Recognition engine runs as a separate process per classroom.
+- Recognition process lifecycle is tracked in DB for crash/restart resilience.
+
+Lifecycle (api/server.py):
+- Startup:
+  - initialize DB pool
+  - run schema migrations
+  - clean stale recognition sessions
+- Runtime:
+  - serve /auth, /admin, /lecture, /attendance, /analytics
+- Shutdown:
+  - stop all recognition processes
+  - close DB pool
+
+============================================================
+3) RUNTIME ENTRYPOINTS AND COMMANDS
+============================================================
+Main command router (main.py):
+- python main.py db
+  - initializes DB pool, runs migrations, closes pool
+- python main.py register
+  - starts student face registration flow
+- python main.py recognize
+  - starts recognition for default classroom (CR-2113 or CLASSROOM_ID env)
+- python main.py recognize --classroom <ROOM_ID>
+  - starts recognition for specific classroom
+- python main.py server
+  - starts FastAPI on 0.0.0.0:8000
+  - optional --reload flag
+
+Environment bootstrap:
+- main.py reads .env values itself (without overwriting existing env vars).
+
+============================================================
+4) DATABASE ENTITY CATALOG (EVERY TABLE)
+============================================================
+Schema source:
+- migrations/schema.py
+
+Extension:
+- pgcrypto (for digest hashing)
+
+----------------------------------------
+4.1 users
+----------------------------------------
+Purpose:
+- Generic user table (role-tagged identity abstraction).
+
+Columns:
+- id TEXT PK, default gen_random_uuid()::TEXT
+- name TEXT NOT NULL
+- email TEXT UNIQUE NOT NULL
+- role TEXT NOT NULL CHECK role IN (admin, teacher, student)
+- password_hash TEXT NOT NULL
+- created_at TIMESTAMPTZ default NOW()
+
+Notes:
+- students and teachers reference users.user_id optionally (nullable relation).
+
+----------------------------------------
+4.2 login_credentials
+----------------------------------------
+Purpose:
+- Actual login credential storage by role and principal identifier.
+
+Columns:
+- role TEXT CHECK role IN (admin, teacher, student)
+- principal_id TEXT
+- password_hash TEXT
+- created_at TIMESTAMPTZ default NOW()
+- updated_at TIMESTAMPTZ default NOW()
+
+Primary Key:
+- (role, principal_id)
+
+Password Model:
+- SHA-256 hex hashes via Postgres encode(digest(password, 'sha256'), 'hex').
+
+Seed Logic:
+- admin/admin123 seeded (unless already present)
+- student default password = student_id
+- teacher default password = teacher_id
+
+----------------------------------------
+4.3 departments
+----------------------------------------
+Purpose:
+- Department master reference.
+
+Columns:
+- dept_id TEXT PK
+- dept_name TEXT NOT NULL
+
+Notes:
+- no direct FK wiring from courses/students currently.
+
+----------------------------------------
+4.4 students
+----------------------------------------
+Purpose:
+- Student master and biometric registration store.
+
+Columns:
+- student_id TEXT PK
+- user_id TEXT FK -> users(id) ON DELETE SET NULL
+- name TEXT NOT NULL
+- email TEXT
+- department TEXT NOT NULL
+- semester INTEGER NOT NULL CHECK semester BETWEEN 1 AND 12
+- face_encoding BYTEA
+- registered_at TIMESTAMPTZ
+- created_at TIMESTAMPTZ default NOW()
+
+Index:
+- idx_students_semester_dept (semester, department)
+
+Feature Ties:
+- registration writes face_encoding and registered_at
+- attendance/disputes/reminders reference student_id
+
+----------------------------------------
+4.5 teachers
+----------------------------------------
+Purpose:
+- Teacher master records.
+
+Columns:
+- teacher_id TEXT PK
+- user_id TEXT FK -> users(id) ON DELETE SET NULL
+- name TEXT NOT NULL
+- email TEXT
+- department TEXT NOT NULL
+- created_at TIMESTAMPTZ default NOW()
+
+Feature Ties:
+- assigned to courses through course_teachers
+- used for lecture ownership and dispute review authorization
+
+----------------------------------------
+4.6 classrooms
+----------------------------------------
+Purpose:
+- Classroom metadata and classroom login PIN.
+
+Columns:
+- classroom_id TEXT PK
+- room_number TEXT NOT NULL
+- building TEXT
+- capacity INTEGER
+- access_pin TEXT default '1234'
+
+Migration Safety:
+- adds access_pin if missing in existing deployments.
+
+Feature Ties:
+- classroom login uses classroom_id + access_pin
+- lecture sessions and schedule are room-scoped
+
+----------------------------------------
+4.7 courses
+----------------------------------------
+Purpose:
+- Course master data.
+
+Columns:
+- course_id TEXT PK
+- course_name TEXT NOT NULL
+- department TEXT NOT NULL
+- semester INTEGER NOT NULL
+- credits INTEGER default 3
+
+Index:
+- idx_courses_semester_dept (semester, department)
+
+Feature Ties:
+- schedule mapping, lecture sessions, analytics grouping, reminders
+
+----------------------------------------
+4.8 course_teachers
+----------------------------------------
+Purpose:
+- Many-to-many link between courses and teachers.
+
+Columns:
+- id SERIAL PK
+- course_id TEXT FK -> courses(course_id) ON DELETE CASCADE
+- teacher_id TEXT FK -> teachers(teacher_id) ON DELETE CASCADE
+
+Constraint:
+- UNIQUE(course_id, teacher_id)
+
+Feature Ties:
+- teacher dashboard course assignment
+- teacher authorization for dispute resolution
+
+----------------------------------------
+4.9 weekly_schedule
+----------------------------------------
+Purpose:
+- Weekly timetable used for auto-detection and classroom upcoming cards.
+
+Columns:
+- schedule_id SERIAL PK
+- course_id TEXT FK -> courses(course_id) ON DELETE CASCADE
+- classroom_id TEXT FK -> classrooms(classroom_id) ON DELETE CASCADE
+- day_of_week TEXT CHECK fixed day names
+- start_time TIME
+- end_time TIME
+
+Constraint:
+- valid_time_range CHECK end_time > start_time
+
+Index:
+- idx_schedule_classroom_day (classroom_id, day_of_week)
+
+Feature Ties:
+- get_current_course and get_upcoming_lectures
+
+----------------------------------------
+4.10 lecture_sessions
+----------------------------------------
+Purpose:
+- Individual lecture instances (active/closed).
+
+Columns:
+- lecture_id SERIAL PK
+- course_id TEXT FK -> courses(course_id)
+- classroom_id TEXT FK -> classrooms(classroom_id)
+- teacher_id TEXT FK -> teachers(teacher_id)
+- status TEXT CHECK IN (active, closed), default active
+- start_time TIMESTAMPTZ default NOW()
+- end_time TIMESTAMPTZ
+
+Indexes:
+- idx_lecture_classroom_status (classroom_id, status)
+- idx_lecture_start_time (start_time DESC)
+
+Important Design Change:
+- old UNIQUE(classroom_id, status) was removed because it incorrectly blocked future closed sessions.
+- one-active-per-room is now enforced in service logic.
+
+Feature Ties:
+- live attendance and history are lecture_id-centric.
+
+----------------------------------------
+4.11 recognition_sessions
+----------------------------------------
+Purpose:
+- Persistent tracking of recognition process PID per classroom.
+
+Columns:
+- classroom_id TEXT PK FK -> classrooms(classroom_id) ON DELETE CASCADE
+- pid INTEGER NOT NULL
+- started_at TIMESTAMPTZ default NOW()
+- updated_at TIMESTAMPTZ default NOW()
+
+Index:
+- idx_recognition_sessions_pid (pid)
+
+Feature Ties:
+- supports crash-safe recognition state across API restarts.
+
+----------------------------------------
+4.12 attendance
+----------------------------------------
+Purpose:
+- Atomic attendance marks for each student per lecture.
+
+Columns:
+- id BIGSERIAL PK
+- lecture_id INTEGER FK -> lecture_sessions(lecture_id)
+- student_id TEXT FK -> students(student_id)
+- timestamp TIMESTAMPTZ default NOW()
+- source TEXT CHECK IN (face_recognition, manual_override), default face_recognition
+- marked_by TEXT
+
+Uniqueness:
+- UNIQUE(student_id, lecture_id)
+
+Indexes:
+- idx_attendance_lecture (lecture_id)
+- idx_attendance_student (student_id)
+- idx_attendance_timestamp (timestamp)
+
+Feature Ties:
+- idempotent marking
+- analytics for present vs absent and trends
+
+----------------------------------------
+4.13 audit_log
+----------------------------------------
+Purpose:
+- Immutable operational trail for security and traceability.
+
+Columns:
+- log_id BIGSERIAL PK
+- event_type TEXT NOT NULL
+- actor_id TEXT
+- target_id TEXT
+- detail JSONB
+- created_at TIMESTAMPTZ default NOW()
+
+Indexes:
+- idx_audit_event_type (event_type)
+- idx_audit_created_at (created_at DESC)
+
+Event Examples:
+- attendance_marked
+- manual_override
+- dispute_created
+- dispute_resolved
+- face_registered
+
+----------------------------------------
+4.14 attendance_disputes
+----------------------------------------
+Purpose:
+- Student-raised attendance correction requests.
+
+Columns:
+- dispute_id BIGSERIAL PK
+- student_id TEXT FK -> students(student_id) ON DELETE CASCADE
+- course_id TEXT FK -> courses(course_id) ON DELETE SET NULL
+- lecture_id INTEGER FK -> lecture_sessions(lecture_id) ON DELETE SET NULL
+- reason TEXT NOT NULL
+- evidence TEXT
+- status TEXT default open CHECK IN (open, approved, rejected)
+- reviewer_id TEXT
+- reviewer_role TEXT CHECK IN (teacher, admin)
+- resolution_note TEXT
+- created_at TIMESTAMPTZ default NOW()
+- reviewed_at TIMESTAMPTZ
+
+Indexes:
+- idx_disputes_student (student_id, created_at DESC)
+- idx_disputes_status (status, created_at DESC)
+- idx_disputes_course (course_id)
+
+----------------------------------------
+4.15 defaulter_reminders
+----------------------------------------
+Purpose:
+- Weekly attendance warning queue for low-attendance students.
+
+Columns:
+- reminder_id BIGSERIAL PK
+- student_id TEXT FK -> students(student_id) ON DELETE CASCADE
+- course_id TEXT FK -> courses(course_id) ON DELETE CASCADE
+- percentage NUMERIC(5,2) NOT NULL
+- week_start DATE NOT NULL
+- status TEXT default pending CHECK IN (pending, sent)
+- delivery_channel TEXT default in_app
+- message TEXT
+- created_at TIMESTAMPTZ default NOW()
+- sent_at TIMESTAMPTZ
+
+Unique Constraint:
+- UNIQUE(student_id, course_id, week_start)
+
+Indexes:
+- idx_reminders_status (status, created_at DESC)
+- idx_reminders_week (week_start DESC)
+
+============================================================
+5) RELATIONSHIP MAP (ENTITY CONNECTIONS)
+============================================================
+Core Data Path:
+- students + lecture_sessions -> attendance
+- attendance -> analytics summary/history/forecast
+
+Academic Assignment Path:
+- courses <-> course_teachers <-> teachers
+- courses + classrooms -> weekly_schedule
+- lecture_sessions derives from course + classroom + optional teacher
+
+Operational Control Path:
+- classrooms -> recognition_sessions (camera process state)
+
+Correction and Governance Path:
+- attendance_disputes references student/course/lecture
+- approved dispute can write attendance
+- all changes audited in audit_log
+
+Reminder Path:
+- analytics low-attendance query -> defaulter_reminders
+
+============================================================
+6) BACKEND MODULES AND RESPONSIBILITIES
+============================================================
+core/database.py:
+- asyncpg pool creation and teardown
+- get_conn context manager
+- transaction context manager
+
+core/recognition_manager.py:
+- starts/stops recognition subprocesses
+- tracks PID in recognition_sessions table
+- verifies stale/dead PIDs and cleans DB rows
+- resolves interpreter path (prefers current API interpreter)
+- supports ATTENDX_RECOGNITION_PYTHON override
+- returns manual command for Windows fallback launch
+
+attendance/attendance_manager.py:
+- mark_attendance (idempotent insert with duplicate protection)
+- manual_override (insert/delete attendance)
+- audit_log writing for each write path
+
+services/lecture_service.py:
+- start_lecture with force mode and schedule fallback
+- one-active-session guard per classroom
+- same-day resume behavior to avoid duplicate lecture rows
+- end_lecture
+- get_active_lecture
+- get_lecture_detail
+
+services/schedule_service.py:
+- get_current_course (exact time-window schedule matching)
+- get_upcoming_lectures (ongoing, upcoming today, upcoming week)
+
+services/dispute_service.py:
+- create_dispute with student and lecture validation
+- list_student_disputes
+- list_disputes with status/course/teacher filters
+- resolve_dispute with row lock and teacher authorization
+- approved dispute optionally marks attendance
+
+services/analytics_service.py:
+- student summary and history
+- include_absent history mode from closed sessions
+- live lecture snapshots
+- teacher dashboard/course details
+- admin dashboard and low attendance alerts
+- weekly defaulter reminder generation
+- reminder queue and mark-sent
+- student and admin risk forecast projections
+- filtered attendance export data pipeline
+
+services/teacher_export_service.py:
+- builds export bytes for:
+  - teacher course export (Excel-compatible HTML and simple PDF)
+  - admin filtered export (Excel-compatible HTML and simple PDF)
+- generates safe filenames based on filters
+
+services/csv_service.py:
+- bulk CSV import for students, teachers, courses, schedule, and course-teacher mappings
+- creates default login credentials for imported students and teachers
+
+registration/register_student.py:
+- interactive face registration flow
+- validates student exists
+- captures N samples
+- computes averaged normalized embedding
+- stores face_encoding bytes in students table
+- logs registration in audit_log
+
+recognition/recognizer.py:
+- camera capture loop
+- active lecture auto-detection and auto-start
+- InsightFace face detection + embedding
+- cosine matching with strict threshold and margin options
+- optional motion-based liveness gate
+- recognition buffer and cooldown control
+- marks attendance through attendance manager
+- GUI window fallback to headless mode when OpenCV GUI unavailable
+
+utils/face_utils.py:
+- model singleton loading
+- known-face matrix loading from DB
+- normalization and cosine_match scoring logic
+
+config/settings.py:
+- database, recognition, API, analytics settings dataclasses
+- env-driven strict recognition/liveness toggles
+
+============================================================
+7) API CATALOG (EXPLICIT ROUTE LIST)
+============================================================
+Health:
+- GET /
+  - returns service status, title, version
+
+----------------------------------------
+7.1 Auth Routes (/auth)
+----------------------------------------
+- POST /auth/login
+  - role-based login for student/teacher/admin
+  - classroom login is separate under /lecture/classroom-login
+- POST /auth/change-password
+  - current user password change
+- POST /auth/reset-password
+  - admin-authenticated password reset for any role
+
+----------------------------------------
+7.2 Admin Routes (/admin)
+----------------------------------------
+Student management:
+- POST /admin/students
+- GET /admin/students
+- PUT /admin/students/{student_id}
+- DELETE /admin/students/{student_id}
+
+Teacher management:
+- POST /admin/teachers
+- GET /admin/teachers
+
+Course management:
+- POST /admin/courses
+- GET /admin/courses
+
+Classroom management:
+- POST /admin/classrooms
+- GET /admin/classrooms
+- PUT /admin/classrooms/{classroom_id}/pin
+
+Schedule:
+- POST /admin/schedule
+- GET /admin/schedule/{classroom_id}
+
+CSV bulk upload:
+- POST /admin/upload/students
+- POST /admin/upload/teachers
+- POST /admin/upload/courses
+- POST /admin/upload/schedule
+- POST /admin/upload/course-teachers
+
+Audit:
+- GET /admin/audit-log
+
+----------------------------------------
+7.3 Lecture Routes (/lecture)
+----------------------------------------
+Classroom auth and schedule info:
+- POST /lecture/classroom-login
+- GET /lecture/upcoming/{classroom_id}
+
+Session control:
+- POST /lecture/start
+- POST /lecture/end
+- POST /lecture/force-close/{classroom_id}
+- GET /lecture/active/{classroom_id}
+
+Live and detail:
+- GET /lecture/{lecture_id}/live
+- GET /lecture/{lecture_id}
+
+----------------------------------------
+7.4 Attendance Routes (/attendance)
+----------------------------------------
+Core attendance:
+- POST /attendance/mark
+- POST /attendance/override
+- GET /attendance/count/{lecture_id}
+- GET /attendance/list/{lecture_id}
+
+Disputes:
+- POST /attendance/disputes
+- GET /attendance/disputes/student/{student_id}
+- GET /attendance/disputes
+- POST /attendance/disputes/{dispute_id}/resolve
+
+----------------------------------------
+7.5 Analytics Routes (/analytics)
+----------------------------------------
+Student analytics:
+- GET /analytics/student/{student_id}
+- GET /analytics/student/{student_id}/history
+- GET /analytics/student/{student_id}/forecast
+
+Teacher analytics:
+- GET /analytics/teacher/{teacher_id}/dashboard
+- GET /analytics/teacher/{teacher_id}/courses/{course_id}
+- GET /analytics/teacher/{teacher_id}/courses/{course_id}/export
+- GET /analytics/teacher/{teacher_id}
+
+Admin analytics:
+- GET /analytics/admin/dashboard
+- GET /analytics/admin/alerts
+- POST /analytics/admin/reminders/generate
+- GET /analytics/admin/reminders
+- POST /analytics/admin/reminders/mark-sent
+- GET /analytics/admin/risk-forecast
+- GET /analytics/admin/export
+
+============================================================
+8) FRONTEND PAGES AND EXPLICIT FEATURE SET
+============================================================
+----------------------------------------
+8.1 login.html
+----------------------------------------
+Features:
+- Role tabs for Student, Teacher, Admin, Room
+- Dynamic labels/placeholders/hints by role
+- Student/Teacher/Admin login uses /auth/login
+- Classroom login uses /lecture/classroom-login
+- Stores role/user identity in localStorage
+- Enter key submission support
+
+----------------------------------------
+8.2 student.html
+----------------------------------------
+Sections:
+- Overview
+- History
+- Disputes
+
+Overview features:
+- overall and subject-level attendance cards
+- risk forecast panel
+- recent activity list
+
+History features:
+- include_absent=true support
+- per lecture row with:
+  - date/time
+  - lecture ID
+  - subject
+  - room
+  - attendance status (present/absent)
+  - marked time
+  - source (face/manual)
+- direct "Raise dispute" prefill action
+
+Dispute features:
+- submit dispute with optional course_id/lecture_id/evidence
+- view dispute statuses and review timestamps
+
+----------------------------------------
+8.3 teacher.html
+----------------------------------------
+Sidebar sections (split workflow):
+- Course Records
+- Manual Attendance
+- Disputes
+- Session Control
+
+Course Records features:
+- assigned course table
+- summary cards (courses, enrollments, lectures, avg attendance)
+- course detail with student-level attendance
+- recent lecture history
+- search/filter in student table
+
+Manual Attendance features:
+- select prior lecture
+- scope toggle (absentees only or all students)
+- action toggle (mark selected present/absent)
+- bulk selection and apply action
+- Enter key submission in manual panel
+
+Disputes features:
+- queue for selected course
+- approve/reject actions
+
+Session Control features:
+- classroom and subject selection
+- start/end attendance session
+- live present/absent/pct stats
+- present and absent lists
+- camera status indicator
+- support for resumed same-day sessions
+
+----------------------------------------
+8.4 admin.html
+----------------------------------------
+Sections:
+- Dashboard
+- Data Management
+- Audit Log
+
+Dashboard features:
+- total students, active lectures, today attendance, at-risk students
+- low attendance alerts table
+- department overview
+- reminder queue with generate/refresh/mark-sent
+- risk forecast panel
+- smart export filters (course/department/semester/date)
+
+Data Management tabs:
+- Students
+  - upload CSV
+  - add single student
+  - list/edit/delete students
+  - filter by department
+- Teachers
+  - upload teacher CSV
+  - upload course_teachers CSV
+  - list teachers
+- Courses
+  - upload courses CSV
+  - upload schedule CSV
+  - list courses
+- Classrooms
+  - add classroom with access PIN
+  - list classrooms
+
+Audit Log features:
+- recent audit entries with event, actor, target, detail
+
+Security feature:
+- admin password reset hooks for student/teacher row actions
+
+----------------------------------------
+8.5 classroom.html
+----------------------------------------
+Features:
+- classroom-device live attendance view
+- upcoming lecture cards (ongoing/upcoming states)
+- one-click session start from schedule card
+- active session panel with live counts and present list
+- stale lecture detection and force-close action
+- Windows manual recognizer command banner if needed
+
+Shared UI helper file (ui/js/api.js):
+- centralized API wrapper (GET/POST/PUT/DELETE/upload)
+- auth guard and user retrieval from localStorage
+- sidebar builder
+- toast notifications
+- clock ticker
+- percentage formatting helpers
+
+============================================================
+9) ATTENDANCE WORKFLOWS (END TO END)
+============================================================
+----------------------------------------
+9.1 Automated Face Attendance Flow
+----------------------------------------
+1. Teacher/classroom starts lecture via /lecture/start.
+2. lecture_service starts new or resumes same-day session.
+3. recognition_manager starts recognizer subprocess for classroom.
+4. recognizer detects faces, computes embeddings, matches known matrix.
+5. Liveness and cooldown checks are applied.
+6. attendance_manager.mark_attendance inserts attendance row idempotently.
+7. audit_log receives attendance_marked event.
+8. /lecture/{id}/live and /attendance/list/{id} update dashboards.
+
+----------------------------------------
+9.2 Teacher Manual Attendance Flow
+----------------------------------------
+1. Teacher opens Manual Attendance section.
+2. Teacher selects course and previous lecture.
+3. UI loads absent/all student list.
+4. Teacher chooses present/absent action.
+5. /attendance/override triggers manual_override.
+6. attendance row inserted or deleted.
+7. audit_log receives manual_override event.
+
+----------------------------------------
+9.3 Student Dispute Flow
+----------------------------------------
+1. Student opens history and identifies lecture.
+2. Student submits dispute via /attendance/disputes.
+3. dispute row stored as open.
+4. Teacher/admin lists queue via /attendance/disputes.
+5. Reviewer resolves via /attendance/disputes/{id}/resolve.
+6. If approved and lecture exists, attendance may be marked automatically.
+7. dispute status and audit log are updated.
+
+----------------------------------------
+9.4 Defaulter Reminder Flow
+----------------------------------------
+1. System computes low attendance alerts.
+2. Admin triggers /analytics/admin/reminders/generate.
+3. reminder rows inserted/upserted weekly.
+4. Admin views queue via /analytics/admin/reminders.
+5. Admin marks sent via /analytics/admin/reminders/mark-sent.
+
+----------------------------------------
+9.5 Export Flow
+----------------------------------------
+Teacher export:
+- route: /analytics/teacher/{teacher_id}/courses/{course_id}/export
+- formats: excel or pdf
+- optional from_date/to_date filtering
+
+Admin export:
+- route: /analytics/admin/export
+- filters: course_id, department, semester, from_date, to_date
+- formats: excel or pdf
+
+============================================================
+10) ANALYTICS MODEL DETAILS
+============================================================
+Student Summary:
+- total attended lectures / total closed lectures
+- subject-wise percentages
+- warning and critical classification thresholds
+
+Student History Modes:
+- default mode: only marked attendance rows
+- include_absent mode: closed lecture sessions left-joined with attendance to explicitly output absent rows
+
+Live Lecture Snapshot:
+- present count
+- enrolled count (derived from department+semester cohort)
+- absent count/list
+- percentage
+
+Teacher Dashboard:
+- per-course totals and averages
+- recent session context
+- teacher name aggregation
+
+Admin Dashboard:
+- system totals
+- daily attendance trend (last 30 days)
+- department averages
+- low attendance student list
+
+Risk Forecast:
+- computes recent attendance rate window
+- projects next N lectures
+- marks high/medium/low risk by threshold comparison
+
+============================================================
+11) RECOGNITION AND BIOMETRIC DETAILS
+============================================================
+Model and Embeddings:
+- InsightFace model pack: buffalo_l
+- embedding dimension: 512
+
+Matching:
+- cosine similarity
+- configurable threshold and winner margin
+- strict mode flags available via env
+
+Liveness:
+- optional motion-based center-shift check
+- requires minimum pixel motion before accepting mark
+
+Anti-duplicate controls:
+- recognition buffer (multiple frames)
+- per-student cooldown window
+- DB unique constraint on (student_id, lecture_id)
+
+Process control:
+- API tries to start recognizer process
+- process PID tracked in recognition_sessions
+- stale/dead PID cleanup on startup and health checks
+- manual command fallback for Windows behavior
+
+Registration:
+- captures configurable sample count
+- averages embeddings and normalizes vector
+- stores bytes in students.face_encoding
+
+============================================================
+12) SECURITY, AUTH, AND GOVERNANCE
+============================================================
+Authentication:
+- role-based login with hashed password lookup
+- classroom uses access PIN route separate from /auth
+
+Password Operations:
+- self change (requires current password)
+- admin reset for any role
+
+Authorization points:
+- teacher dispute resolve allowed only for assigned courses
+- classroom login requires matching room PIN
+
+Auditability:
+- key write actions produce audit_log records
+- dispute and manual override are traceable by actor_id
+
+============================================================
+13) CONFIGURATION AND ENVIRONMENT VARIABLES
+============================================================
+Database:
+- DB_HOST
+- DB_PORT
+- DB_NAME
+- DB_USER
+- DB_PASSWORD
+
+Admin login fallback:
+- ADMIN_LOGIN_ID
+- ADMIN_LOGIN_PASSWORD
+
+Recognition runtime:
+- ATTENDX_STRICT_CONFIDENCE
+- ATTENDX_STRICT_SIMILARITY
+- ATTENDX_STRICT_MARGIN
+- ATTENDX_ENABLE_LIVENESS
+- ATTENDX_LIVENESS_MIN_MOTION_PX
+- ATTENDX_RECOGNITION_PYTHON
+
+Server runtime:
+- ATTENDX_RELOAD
+
+Recognition default classroom:
+- CLASSROOM_ID
+
+============================================================
+14) DATA SEEDING AND PATCH FILES
+============================================================
+seed.sql:
+- inserts base classrooms, courses, teachers, assignments, students, and weekly schedule
+- includes verification query section
+
+migrations/sem4_course_teacher_patch.sql:
+- updates/normalizes semester-4 course and teacher mapping
+- remaps legacy course IDs in lecture_sessions before cleanup
+- rewrites assignments and schedule in transaction
+
+============================================================
+15) TESTING AND AUTOMATION
+============================================================
+API tests:
+- tests/api/test_new_feature_endpoints.py
+- validates analytics reminder endpoints, exports, dispute routes, and auth password routes through mocked dependencies
+
+Selenium tests:
+- tests/selenium/test_login.py
+- tests/selenium/test_dashboards.py
+- tests/selenium/conftest.py includes browser setup and mock API fetch interception for deterministic UI testing
+
+Report generation:
+- run_selenium_tests.ps1
+  - prefers .venv311 interpreter if present
+  - executes selenium test marker set
+  - writes junit xml
+  - builds HTML report via tests/selenium/build_html_report.py
+
+============================================================
+16) OPERATIONAL CHARACTERISTICS AND IMPORTANT BEHAVIORS
+============================================================
+Session Resume Logic:
+- restarting same course same day can resume recent session rather than creating duplicate lecture rows.
+
+Stale Session Recovery:
+- classroom UI can force-close stale active lecture records.
+
+Windows Recognition Behavior:
+- if camera process cannot be auto-confirmed, UI surfaces manual command and continues session control.
+
+Idempotency:
+- attendance duplicates are blocked by DB uniqueness and handled without crashing.
+
+Scalability Notes:
+- heavy aggregation is done in SQL with indexes on attendance and lecture time columns.
+
+============================================================
+17) EXPLICIT FEATURE CHECKLIST BY ROLE
+============================================================
+Student:
+- login and password change
+- dashboard stats and subject breakdown
+- recent activity
+- full history with absent and present rows
+- dispute submission and dispute tracking
+- risk forecast
+
+Teacher:
+- login and password change
+- course dashboard and student-level detail
+- session start/end and live monitoring
+- manual attendance updates for past lectures
+- dispute queue and resolution
+- attendance export
+
+Admin:
+- login and password change
+- user data management (students/teachers/courses/classrooms)
+- schedule management and CSV ingestion
+- password reset for users
+- analytics dashboard and low attendance alerts
+- reminder generation and queue control
+- smart filtered export
+- audit log visibility
+
+Classroom Device:
+- classroom PIN login
+- upcoming lecture preview
+- quick lecture start
+- live present list and attendance stats
+- stale session handling
+
+============================================================
+18) CURRENT STATE SUMMARY
+============================================================
+The codebase currently implements a complete end-to-end attendance platform with:
+- robust multi-role login
+- automated camera attendance
+- manual correction paths
+- analytics and forecasts
+- dispute governance
+- reminder queueing
+- exports
+- auditability
+- migration-backed schema consistency
+- UI-level flows for all core operations
+
+This report covers all major entities, route groups, workflows, and feature surfaces present in the repository snapshot.

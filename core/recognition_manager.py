@@ -29,10 +29,11 @@ _processes: dict[str, subprocess.Popen | asyncio.subprocess.Process] = {}
 
 def build_manual_command(classroom_id: str) -> str:
     """Return a copy-pasteable command to start recognition manually."""
+    python_exe = str(_resolve_python_executable())
     script_path = str(PROJECT_ROOT / "main.py")
     if IS_WINDOWS:
-        return f'python "{script_path}" recognize --classroom {classroom_id}'
-    return shlex.join(["python3", script_path, "recognize", "--classroom", classroom_id])
+        return f'"{python_exe}" "{script_path}" recognize --classroom {classroom_id}'
+    return shlex.join([python_exe, script_path, "recognize", "--classroom", classroom_id])
 
 
 def is_running(classroom_id: str) -> bool:
@@ -123,6 +124,21 @@ async def start_recognition_process(classroom_id: str) -> bool:
 
         _processes[classroom_id] = proc
         await _upsert_session(classroom_id, _get_pid(proc))
+
+        # On Windows a failed child can open and close a console immediately.
+        # Give it a brief grace period and verify it is still alive.
+        if IS_WINDOWS:
+            await asyncio.sleep(1.5)
+            if proc.poll() is not None:
+                _processes.pop(classroom_id, None)
+                await _delete_session(classroom_id)
+                logger.error(
+                    "Recognition process for %s exited immediately (code=%s). "
+                    "Check interpreter dependencies and recognition_last_error.log.",
+                    classroom_id,
+                    proc.returncode,
+                )
+                return False
 
         logger.info(
             "Recognition process started for %s (pid=%d) using %s",
@@ -234,7 +250,19 @@ async def _delete_session(classroom_id: str) -> None:
 
 
 def _resolve_python_executable() -> Path:
-    candidates: list[Path] = []
+    override = os.getenv("ATTENDX_RECOGNITION_PYTHON", "").strip()
+    if override:
+        override_path = Path(override)
+        if override_path.exists():
+            return override_path
+        logger.warning(
+            "ATTENDX_RECOGNITION_PYTHON is set but not found: %s",
+            override,
+        )
+
+    # Prefer the interpreter running the API server so subprocess imports
+    # match the environment where FastAPI is currently running.
+    candidates: list[Path] = [Path(sys.executable)]
     if IS_WINDOWS:
         candidates.extend([
             PROJECT_ROOT / ".venv" / "Scripts" / "python.exe",
@@ -245,7 +273,6 @@ def _resolve_python_executable() -> Path:
             PROJECT_ROOT / ".venv" / "bin" / "python",
             PROJECT_ROOT / "venv" / "bin" / "python",
         ])
-    candidates.append(Path(sys.executable))
 
     for candidate in candidates:
         if candidate.exists():

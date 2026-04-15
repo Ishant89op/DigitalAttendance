@@ -394,15 +394,18 @@ async function showActiveSession(lectureId, cameraActive) {
 
 // ── POLL LIVE STATS ───────────────────────────────────────────────
 async function pollLive() {
-  if (!activeLectureId) return;
+  const lectureId = activeLectureId;
+  if (!lectureId) return;
   try {
-    const snap = await api.get('/lecture/' + activeLectureId + '/live');
+    const snap = await api.get('/lecture/' + lectureId + '/live');
+    if (activeLectureId !== lectureId) return;
     document.getElementById('stat-present').textContent = snap.present;
     document.getElementById('stat-absent').textContent  = snap.absent;
     document.getElementById('stat-pct').textContent     = snap.percentage + '%';
     document.getElementById('present-count').textContent = snap.present;
 
-    const pl = await api.get('/attendance/list/' + activeLectureId);
+    const pl = await api.get('/attendance/list/' + lectureId);
+    if (activeLectureId !== lectureId) return;
     document.getElementById('present-body').innerHTML = pl.length
       ? pl.map(p => `
           <tr>

@@ -121,6 +121,132 @@ def build_export_filename(course_id: str, fmt: str) -> str:
     return f"{safe_course}_attendance_till_date_{suffix}.{extension}"
 
 
+def build_filtered_export_filename(
+    fmt: str,
+    course_id: str | None,
+    semester: int | None,
+    from_date: str | None,
+    to_date: str | None,
+) -> str:
+    extension = "xls" if fmt == "excel" else "pdf"
+    parts = ["attendance_export"]
+    if course_id:
+        safe_course = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in course_id)
+        parts.append(safe_course)
+    if semester is not None:
+        parts.append(f"sem{semester}")
+    if from_date:
+        parts.append(f"from_{from_date}")
+    if to_date:
+        parts.append(f"to_{to_date}")
+    parts.append(datetime.now().strftime("%Y%m%d"))
+    return "_".join(parts) + f".{extension}"
+
+
+def build_filtered_attendance_excel(report: dict) -> bytes:
+    rows = report.get("rows", [])
+    filters = report.get("filters", {})
+    summary = report.get("summary", {})
+
+    html_rows = []
+    for row in rows:
+        html_rows.append(
+            "<tr>"
+            f"<td>{row.get('lecture_id')}</td>"
+            f"<td>{escape(_format_timestamp(row.get('start_time')))}</td>"
+            f"<td>{escape(_safe_text(row.get('course_id')))}</td>"
+            f"<td>{escape(_safe_text(row.get('course_name')))}</td>"
+            f"<td>{escape(_safe_text(row.get('department')))}</td>"
+            f"<td>{row.get('semester')}</td>"
+            f"<td>{escape(_safe_text(row.get('student_id')))}</td>"
+            f"<td>{escape(_safe_text(row.get('student_name')))}</td>"
+            f"<td>{escape(_safe_text(row.get('classroom_id')))}</td>"
+            f"<td>{escape(_format_timestamp(row.get('timestamp')))}</td>"
+            f"<td>{escape(_safe_text(row.get('source')))}</td>"
+            "</tr>"
+        )
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset=\"UTF-8\">
+<style>
+body {{ font-family: Arial, sans-serif; font-size: 12px; }}
+h1 {{ font-size: 18px; margin-bottom: 4px; }}
+.meta {{ margin-bottom: 16px; color: #444; }}
+table {{ border-collapse: collapse; width: 100%; }}
+th, td {{ border: 1px solid #cfcfcf; padding: 6px 8px; text-align: left; }}
+th {{ background: #eef4ff; font-weight: 700; }}
+</style>
+</head>
+<body>
+<h1>AttendX Smart Export</h1>
+<div class=\"meta\">
+  <div>Course: {escape(_safe_text(filters.get('course_id') or 'ALL'))}</div>
+  <div>Department: {escape(_safe_text(filters.get('department') or 'ALL'))}</div>
+  <div>Semester: {escape(_safe_text(filters.get('semester') or 'ALL'))}</div>
+  <div>Date Range: {escape(_safe_text(filters.get('from_date') or '-'))} to {escape(_safe_text(filters.get('to_date') or '-'))}</div>
+  <div>Records: {summary.get('records', 0)} | Unique Students: {summary.get('unique_students', 0)} | Unique Lectures: {summary.get('unique_lectures', 0)}</div>
+  <div>Generated: {escape(_safe_text(report.get('generated_at') or ''))}</div>
+</div>
+<table>
+  <thead>
+    <tr>
+      <th>Lecture ID</th>
+      <th>Lecture Start</th>
+      <th>Course ID</th>
+      <th>Course Name</th>
+      <th>Dept</th>
+      <th>Sem</th>
+      <th>Student ID</th>
+      <th>Student Name</th>
+      <th>Classroom</th>
+      <th>Marked At</th>
+      <th>Source</th>
+    </tr>
+  </thead>
+  <tbody>
+    {''.join(html_rows)}
+  </tbody>
+</table>
+</body>
+</html>"""
+    return html.encode("utf-8")
+
+
+def build_filtered_attendance_pdf(report: dict) -> bytes:
+    rows = report.get("rows", [])
+    filters = report.get("filters", {})
+    summary = report.get("summary", {})
+
+    lines = [
+        "AttendX Smart Attendance Export",
+        f"Course: {_safe_text(filters.get('course_id') or 'ALL')}  Dept: {_safe_text(filters.get('department') or 'ALL')}  Sem: {_safe_text(filters.get('semester') or 'ALL')}",
+        f"Date range: {_safe_text(filters.get('from_date') or '-')} to {_safe_text(filters.get('to_date') or '-')}",
+        f"Records: {summary.get('records', 0)} | Unique Students: {summary.get('unique_students', 0)} | Unique Lectures: {summary.get('unique_lectures', 0)}",
+        f"Generated: {_safe_text(report.get('generated_at') or '')}",
+        "",
+        _fixed_row(("Lecture", "Course", "Student", "Marked At", "Source"), (8, 24, 24, 20, 12)),
+        "-" * 98,
+    ]
+
+    for row in rows:
+        lines.append(
+            _fixed_row(
+                (
+                    row.get("lecture_id"),
+                    f"{row.get('course_id')} {_safe_text(row.get('course_name'))}",
+                    f"{row.get('student_id')} {_safe_text(row.get('student_name'))}",
+                    _format_timestamp(row.get("timestamp")) or "-",
+                    row.get("source") or "-",
+                ),
+                (8, 24, 24, 20, 12),
+            )
+        )
+
+    return _render_simple_pdf(lines, title="AttendX Smart Export")
+
+
 def _fixed_row(values: tuple[object, ...], widths: tuple[int, ...]) -> str:
     parts = []
     for value, width in zip(values, widths):

@@ -39,6 +39,14 @@ async def import_students(file_path: str) -> dict:
                     int(row["semester"]),
                 )
                 if result.endswith("1"):
+                    await conn.execute(
+                        """
+                        INSERT INTO login_credentials (role, principal_id, password_hash)
+                        VALUES ('student', $1, encode(digest($1::TEXT, 'sha256'), 'hex'))
+                        ON CONFLICT (role, principal_id) DO NOTHING
+                        """,
+                        row["student_id"].strip(),
+                    )
                     inserted += 1
                 else:
                     skipped += 1
@@ -73,6 +81,14 @@ async def import_teachers(file_path: str) -> dict:
                     row["department"].strip(),
                 )
                 if result.endswith("1"):
+                    await conn.execute(
+                        """
+                        INSERT INTO login_credentials (role, principal_id, password_hash)
+                        VALUES ('teacher', $1, encode(digest($1::TEXT, 'sha256'), 'hex'))
+                        ON CONFLICT (role, principal_id) DO NOTHING
+                        """,
+                        row["teacher_id"].strip(),
+                    )
                     inserted += 1
                 else:
                     skipped += 1

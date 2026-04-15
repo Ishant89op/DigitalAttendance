@@ -10,6 +10,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 # ─────────────────────────────────────────────
 # DATABASE
 # ─────────────────────────────────────────────
@@ -42,6 +49,21 @@ class RecognitionSettings:
     similarity_threshold: float = 0.50           # cosine similarity cutoff
     match_margin: float     = 0.05               # winner must clearly beat the runner-up
     min_detection_score: float = 0.60            # ignore weak / partial detections
+    strict_confidence_mode: bool = field(
+        default_factory=lambda: _env_bool("ATTENDX_STRICT_CONFIDENCE", True)
+    )
+    strict_similarity_threshold: float = field(
+        default_factory=lambda: float(os.getenv("ATTENDX_STRICT_SIMILARITY", "0.60"))
+    )
+    strict_match_margin: float = field(
+        default_factory=lambda: float(os.getenv("ATTENDX_STRICT_MARGIN", "0.08"))
+    )
+    enable_liveness_check: bool = field(
+        default_factory=lambda: _env_bool("ATTENDX_ENABLE_LIVENESS", True)
+    )
+    liveness_min_motion_px: float = field(
+        default_factory=lambda: float(os.getenv("ATTENDX_LIVENESS_MIN_MOTION_PX", "2.0"))
+    )
     cooldown_seconds: int   = 30                 # prevent duplicate marks
     max_faces_per_frame: int = 6
     samples_required: int   = 20                 # for registration

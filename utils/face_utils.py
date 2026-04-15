@@ -98,7 +98,8 @@ def normalize(vec: np.ndarray) -> np.ndarray:
 def cosine_match(
     query: np.ndarray,
     known_matrix: np.ndarray,
-    threshold: float = cfg.similarity_threshold,
+    threshold: float | None = None,
+    min_margin: float | None = None,
 ) -> FaceMatch:
     """
     Find the best match for `query` in `known_matrix`.
@@ -107,12 +108,26 @@ def cosine_match(
         query        : (D,) embedding vector
         known_matrix : (N, D) normalized embeddings
         threshold    : minimum cosine similarity to accept
+        min_margin   : required winner-vs-runner-up margin
 
     Returns:
         FaceMatch with the best score and whether the match is safe to accept.
     """
     if known_matrix.shape[0] == 0:
         return FaceMatch(None, 0.0, 0.0, 0.0, False)
+
+    if threshold is None:
+        threshold = (
+            cfg.strict_similarity_threshold
+            if cfg.strict_confidence_mode
+            else cfg.similarity_threshold
+        )
+    if min_margin is None:
+        min_margin = (
+            cfg.strict_match_margin
+            if cfg.strict_confidence_mode
+            else cfg.match_margin
+        )
 
     query = normalize(np.asarray(query, dtype=np.float32))
     similarities = known_matrix @ query          # (N,) dot products
@@ -125,7 +140,7 @@ def cosine_match(
     margin = best_score - second_score
 
     accepted = best_score >= threshold and (
-        similarities.shape[0] == 1 or margin >= cfg.match_margin
+        similarities.shape[0] == 1 or margin >= min_margin
     )
     return FaceMatch(
         best_idx if accepted else None,

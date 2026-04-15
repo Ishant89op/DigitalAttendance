@@ -43,6 +43,14 @@ async def add_student(data: StudentCreate):
                 data.student_id, data.name, data.email,
                 data.department, data.semester,
             )
+            await conn.execute(
+                """
+                INSERT INTO login_credentials (role, principal_id, password_hash)
+                VALUES ('student', $1, encode(digest($1::TEXT, 'sha256'), 'hex'))
+                ON CONFLICT (role, principal_id) DO NOTHING
+                """,
+                data.student_id,
+            )
         except Exception as e:
             raise HTTPException(status_code=409, detail=f"Student already exists: {e}")
     return {"message": "Student created", "student_id": data.student_id}
@@ -84,6 +92,10 @@ async def update_student(student_id: str, data: StudentCreate):
 @router.delete("/students/{student_id}", summary="Delete a student")
 async def delete_student(student_id: str):
     async with transaction() as conn:
+        await conn.execute(
+            "DELETE FROM login_credentials WHERE role='student' AND principal_id=$1",
+            student_id,
+        )
         result = await conn.execute(
             "DELETE FROM students WHERE student_id=$1", student_id
         )
@@ -113,6 +125,14 @@ async def add_teacher(data: TeacherCreate):
                 VALUES ($1, $2, $3, $4)
                 """,
                 data.teacher_id, data.name, data.email, data.department,
+            )
+            await conn.execute(
+                """
+                INSERT INTO login_credentials (role, principal_id, password_hash)
+                VALUES ('teacher', $1, encode(digest($1::TEXT, 'sha256'), 'hex'))
+                ON CONFLICT (role, principal_id) DO NOTHING
+                """,
+                data.teacher_id,
             )
         except Exception as e:
             raise HTTPException(status_code=409, detail=str(e))

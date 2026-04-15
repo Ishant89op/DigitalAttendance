@@ -7,8 +7,18 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$venvPython = Join-Path $PSScriptRoot ".venv/Scripts/python.exe"
-$pythonExe = if (Test-Path $venvPython) { $venvPython } else { "python" }
+$venvPythonCandidates = @(
+    (Join-Path $PSScriptRoot ".venv311/Scripts/python.exe"),
+    (Join-Path $PSScriptRoot ".venv/Scripts/python.exe")
+)
+
+$pythonExe = "python"
+foreach ($candidate in $venvPythonCandidates) {
+    if (Test-Path $candidate) {
+        $pythonExe = $candidate
+        break
+    }
+}
 
 $env:SELENIUM_BROWSER = $Browser
 $env:SELENIUM_HEADLESS = if ($Headed) { "0" } else { "1" }

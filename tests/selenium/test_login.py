@@ -19,10 +19,17 @@ def test_login_role_switch_and_validation(driver, wait, page_url):
     )
 
     driver.execute_script("setRole('classroom', document.querySelectorAll('.tab')[3]);")
-    wait.until(lambda d: d.find_element(By.ID, "pin-field").is_displayed())
+    wait.until(
+        lambda d: d.find_element(By.ID, "password-label").get_attribute("textContent").strip()
+        == "Room Password"
+    )
 
     driver.find_element(By.ID, "login-btn").click()
     wait.until(EC.text_to_be_present_in_element((By.ID, "error"), "Please enter your ID."))
+
+    driver.find_element(By.ID, "user-id").send_keys("202411052")
+    driver.find_element(By.ID, "login-btn").click()
+    wait.until(EC.text_to_be_present_in_element((By.ID, "error"), "Please enter your password."))
 
 
 def test_student_login_redirects_to_student_dashboard(driver, wait, page_url):
@@ -32,6 +39,7 @@ def test_student_login_redirects_to_student_dashboard(driver, wait, page_url):
     user_id_input = driver.find_element(By.ID, "user-id")
     user_id_input.clear()
     user_id_input.send_keys("202411052")
+    driver.find_element(By.ID, "password").send_keys("202411052")
 
     driver.find_element(By.ID, "login-btn").click()
 
