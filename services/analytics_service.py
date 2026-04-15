@@ -8,6 +8,7 @@ Designed for low latency:
 """
 
 import logging
+from datetime import datetime, timezone
 
 from core.database import get_conn
 from config.settings import analytics as cfg
@@ -236,6 +237,269 @@ async def get_teacher_course_stats(teacher_id: str) -> list[dict]:
             teacher_id,
         )
     return [dict(r) for r in rows]
+
+
+async def get_teacher_dashboard(teacher_id: str) -> dict:
+    """Teacher-facing overview across assigned courses."""
+    async with get_conn() as conn:
+        rows = await conn.fetch(
+            """
+            WITH taught_courses AS (
+                SELECT DISTINCT
+                    c.course_id,
+                    c.course_name,
+                    c.department,
+                    c.semester,
+                    c.credits
+                FROM course_teachers ct
+                JOIN courses c ON c.course_id = ct.course_id
+                WHERE ct.teacher_id = $1
+            ),
+            enrolled AS (
+                SELECT
+                    tc.course_id,
+                    COUNT(s.student_id) AS total_students
+                FROM taught_courses tc
+                LEFT JOIN students s
+                       ON s.department = tc.department
+                      AND s.semester = tc.semester
+                GROUP BY tc.course_id
+            ),
+            lecture_pct AS (
+                SELECT
+                    ls.course_id,
+                    ls.lecture_id,
+                    ls.classroom_id,
+                    ls.status,
+                    ls.start_time,
+                    ls.end_time,
+                    COUNT(a.id) AS present_count
+                FROM lecture_sessions ls
+                LEFT JOIN attendance a ON a.lecture_id = ls.lecture_id
+                GROUP BY ls.course_id, ls.lecture_id, ls.classroom_id, ls.status, ls.start_time, ls.end_time
+            ),
+            latest_today AS (
+                SELECT DISTINCT ON (ls.course_id)
+                    ls.course_id,
+                    ls.lecture_id,
+                    ls.classroom_id,
+                    ls.status,
+                    ls.start_time,
+                    ls.end_time
+                FROM lecture_sessions ls
+                WHERE ls.start_time::DATE = CURRENT_DATE
+                ORDER BY ls.course_id, ls.start_time DESC, ls.lecture_id DESC
+            )
+            SELECT
+                tc.course_id,
+                tc.course_name,
+                tc.department,
+                tc.semester,
+                tc.credits,
+                COALESCE(e.total_students, 0) AS total_students,
+                COUNT(DISTINCT lp.lecture_id) FILTER (WHERE lp.status = 'closed') AS total_lectures,
+                COALESCE(
+                    ROUND(
+                        AVG(
+                            CASE
+                                WHEN COALESCE(e.total_students, 0) = 0 OR lp.status <> 'closed' THEN NULL
+                                ELSE lp.present_count::NUMERIC / e.total_students * 100
+                            END
+                        ),
+                        2
+                    ),
+                    0
+                ) AS avg_attendance_pct,
+                MAX(lp.start_time) FILTER (WHERE lp.status = 'closed') AS last_lecture_at,
+                lt.lecture_id AS today_lecture_id,
+                lt.classroom_id AS today_classroom_id,
+                lt.status AS today_status,
+                lt.start_time AS today_start_time,
+                lt.end_time AS today_end_time,
+                (
+                    SELECT STRING_AGG(t.name, ', ' ORDER BY t.name)
+                    FROM course_teachers ct2
+                    JOIN teachers t ON t.teacher_id = ct2.teacher_id
+                    WHERE ct2.course_id = tc.course_id
+                ) AS teacher_names
+            FROM taught_courses tc
+            LEFT JOIN enrolled e ON e.course_id = tc.course_id
+            LEFT JOIN lecture_pct lp ON lp.course_id = tc.course_id
+            LEFT JOIN latest_today lt ON lt.course_id = tc.course_id
+            GROUP BY
+                tc.course_id,
+                tc.course_name,
+                tc.department,
+                tc.semester,
+                tc.credits,
+                e.total_students,
+                lt.lecture_id,
+                lt.classroom_id,
+                lt.status,
+                lt.start_time,
+                lt.end_time
+            ORDER BY tc.course_name
+            """,
+            teacher_id,
+        )
+
+    courses = []
+    for row in rows:
+        course = dict(row)
+        course["avg_attendance_pct"] = float(course["avg_attendance_pct"] or 0)
+        courses.append(course)
+
+    total_courses = len(courses)
+    total_students = sum(int(course["total_students"] or 0) for course in courses)
+    total_lectures = sum(int(course["total_lectures"] or 0) for course in courses)
+    avg_attendance = round(
+        sum(course["avg_attendance_pct"] for course in courses) / total_courses, 2
+    ) if total_courses else 0.0
+
+    return {
+        "teacher_id": teacher_id,
+        "summary": {
+            "total_courses": total_courses,
+            "total_students": total_students,
+            "total_lectures": total_lectures,
+            "avg_attendance_pct": avg_attendance,
+        },
+        "courses": courses,
+    }
+
+
+async def get_teacher_course_detail(teacher_id: str, course_id: str) -> dict | None:
+    """Full student-level attendance detail for one teacher course."""
+    async with get_conn() as conn:
+        course = await conn.fetchrow(
+            """
+            SELECT
+                c.course_id,
+                c.course_name,
+                c.department,
+                c.semester,
+                c.credits,
+                (
+                    SELECT STRING_AGG(t.name, ', ' ORDER BY t.name)
+                    FROM course_teachers ct2
+                    JOIN teachers t ON t.teacher_id = ct2.teacher_id
+                    WHERE ct2.course_id = c.course_id
+                ) AS teacher_names
+            FROM course_teachers ct
+            JOIN courses c ON c.course_id = ct.course_id
+            WHERE ct.teacher_id = $1
+              AND c.course_id = $2
+            GROUP BY c.course_id, c.course_name, c.department, c.semester, c.credits
+            """,
+            teacher_id,
+            course_id,
+        )
+        if not course:
+            return None
+
+        total_students = await conn.fetchval(
+            """
+            SELECT COUNT(*)
+            FROM students s
+            WHERE s.department = $1
+              AND s.semester = $2
+            """,
+            course["department"],
+            course["semester"],
+        )
+
+        students = await conn.fetch(
+            """
+            SELECT
+                s.student_id,
+                s.name,
+                s.email,
+                s.department,
+                s.semester,
+                (s.face_encoding IS NOT NULL) AS face_registered,
+                COUNT(DISTINCT ls.lecture_id) AS total_lectures,
+                COUNT(DISTINCT a.lecture_id) AS attended,
+                COALESCE(
+                    ROUND(
+                        COUNT(DISTINCT a.lecture_id)::NUMERIC
+                        / NULLIF(COUNT(DISTINCT ls.lecture_id), 0) * 100,
+                        2
+                    ),
+                    0
+                ) AS percentage,
+                MAX(a.timestamp) AS last_present_at
+            FROM students s
+            LEFT JOIN lecture_sessions ls
+                   ON ls.course_id = $1
+                  AND ls.status = 'closed'
+            LEFT JOIN attendance a
+                   ON a.lecture_id = ls.lecture_id
+                  AND a.student_id = s.student_id
+            WHERE s.department = $2
+              AND s.semester = $3
+            GROUP BY s.student_id, s.name, s.email, s.department, s.semester, s.face_encoding
+            ORDER BY s.name
+            """,
+            course_id,
+            course["department"],
+            course["semester"],
+        )
+
+        lectures = await conn.fetch(
+            """
+            WITH enrolled AS (
+                SELECT COUNT(*) AS total_students
+                FROM students s
+                WHERE s.department = $1
+                  AND s.semester = $2
+            )
+            SELECT
+                ls.lecture_id,
+                ls.classroom_id,
+                ls.teacher_id,
+                ls.status,
+                ls.start_time,
+                ls.end_time,
+                COUNT(a.id) AS present_count,
+                COALESCE(
+                    ROUND(
+                        COUNT(a.id)::NUMERIC
+                        / NULLIF((SELECT total_students FROM enrolled), 0) * 100,
+                        2
+                    ),
+                    0
+                ) AS percentage
+            FROM lecture_sessions ls
+            LEFT JOIN attendance a ON a.lecture_id = ls.lecture_id
+            WHERE ls.course_id = $3
+            GROUP BY ls.lecture_id
+            ORDER BY ls.start_time DESC, ls.lecture_id DESC
+            LIMIT 20
+            """,
+            course["department"],
+            course["semester"],
+            course_id,
+        )
+
+    total_lectures = max((int(row["total_lectures"] or 0) for row in students), default=0)
+    avg_attendance_pct = round(
+        sum(float(row["percentage"] or 0) for row in students) / len(students), 2
+    ) if students else 0.0
+
+    course_data = dict(course)
+    course_data.update({
+        "total_students": int(total_students or 0),
+        "total_lectures": total_lectures,
+        "avg_attendance_pct": avg_attendance_pct,
+    })
+
+    return {
+        "teacher_id": teacher_id,
+        "generated_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+        "course": course_data,
+        "students": [dict(row) for row in students],
+        "recent_lectures": [dict(row) for row in lectures],
+    }
 
 
 # ─────────────────────────────────────────────

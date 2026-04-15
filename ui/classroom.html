@@ -336,7 +336,9 @@ async function startLecture(courseId, courseName) {
     isWindowsMode   = !!res.windows_mode;
     manualCmd       = res.manual_command || '';
 
-    if (isWindowsMode && !res.camera_active && manualCmd) {
+    if (res.resumed_today) {
+      toast('Resumed today\'s session. No new lecture was created.', 'success');
+    } else if (isWindowsMode && !res.camera_active && manualCmd) {
       toast('Lecture started — open a NEW terminal and run the shown command to start the camera', 'info');
     } else {
       toast('Attendance started — camera is active', 'success');

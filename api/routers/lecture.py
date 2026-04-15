@@ -85,23 +85,28 @@ class LectureEndRequest(BaseModel):
 
 @router.post("/start")
 async def start(req: LectureStartRequest):
-    lecture_id = await start_lecture(
+    session = await start_lecture(
         classroom_id=req.classroom_id,
         course_id=req.course_id,
         teacher_id=req.teacher_id,
         force=req.force,
     )
-    if not lecture_id:
+    if not session:
         raise HTTPException(
             status_code=409,
             detail="No course assigned or lecture already active.",
         )
+    lecture_id = session["lecture_id"]
 
     manual_command = build_manual_command(req.classroom_id)
     cam_started = await start_recognition_process(req.classroom_id)
     camera_active = await is_running_async(req.classroom_id)
 
-    if camera_active:
+    if session["status"] == "resumed_today":
+        cam_note = "Resumed today's attendance session."
+    elif session["status"] == "existing_active":
+        cam_note = "An active session already exists for this classroom."
+    elif camera_active:
         cam_note = "Camera recognition active."
     elif IS_WINDOWS:
         cam_note = (
@@ -117,6 +122,8 @@ async def start(req: LectureStartRequest):
         "camera_started": cam_started,
         "camera_active":  camera_active,
         "windows_mode":   IS_WINDOWS,
+        "session_status": session["status"],
+        "resumed_today":  session["status"] == "resumed_today",
         "message":        cam_note,
         "manual_command": manual_command,
     }

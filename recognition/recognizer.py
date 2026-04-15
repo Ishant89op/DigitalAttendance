@@ -192,11 +192,15 @@ async def run_recognition(classroom_id: str) -> None:
 
                 lecture_id = await get_active_lecture(classroom_id)
                 if not lecture_id and AUTO_START:
-                    lecture_id = await start_lecture(classroom_id)
-                    if lecture_id:
+                    session = await start_lecture(classroom_id)
+                    if session:
+                        lecture_id = session["lecture_id"]
                         present_today.clear()
                         frame_buffer.clear()
-                        logger.info("Auto-started lecture #%d in %s", lecture_id, classroom_id)
+                        if session["status"] == "resumed_today":
+                            logger.info("Auto-resumed lecture #%d in %s", lecture_id, classroom_id)
+                        else:
+                            logger.info("Auto-started lecture #%d in %s", lecture_id, classroom_id)
 
                 ret, frame = cap.read()
                 if not ret:

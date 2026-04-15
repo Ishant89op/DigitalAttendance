@@ -3,28 +3,120 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AttendX — Teacher Dashboard</title>
+<title>AttendX - Teacher Dashboard</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="css/dashboard.css">
 <style>
-  .cam-bar {
-    display:flex; align-items:center; gap:10px;
-    padding:11px 14px; background:#f0fdf4;
-    border:1px solid #bbf7d0; border-radius:8px;
-    margin-top:12px; display:none;
+  .course-row { cursor: pointer; }
+  .course-row.selected { background: #eef4ff; }
+  .course-overview-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 12px;
+    margin-top: 16px;
   }
-  .cam-dot { width:9px;height:9px;background:var(--green);border-radius:50%;flex-shrink:0;animation:blink 1.2s infinite; }
-  @keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
-  .cam-label { font-size:13px;font-weight:600;color:var(--green); }
-  .cam-sub   { font-size:11px;color:var(--muted);margin-top:1px; }
+  .mini-stat {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 12px 14px;
+    background: var(--surface);
+  }
+  .mini-stat .label {
+    font-size: 11px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 6px;
+  }
+  .mini-stat .value {
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .toolbar-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .toolbar-actions {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .search-input {
+    min-width: 220px;
+    max-width: 320px;
+    width: 100%;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 12px;
+    font-family: var(--sans);
+    font-size: 13px;
+    background: var(--surface);
+    color: var(--text);
+    outline: none;
+  }
+  .search-input:focus {
+    border-color: var(--blue);
+    box-shadow: 0 0 0 3px rgba(59, 110, 245, 0.12);
+  }
+  .muted-note {
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 6px;
+  }
+  .course-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 12px;
+  }
+  .course-meta .badge {
+    font-family: var(--mono);
+    font-size: 11px;
+  }
+  .cam-bar {
+    display: none;
+    align-items: center;
+    gap: 10px;
+    padding: 11px 14px;
+    background: #f0fdf4;
+    border: 1px solid #bbf7d0;
+    border-radius: 8px;
+    margin-top: 12px;
+  }
+  .cam-dot {
+    width: 9px;
+    height: 9px;
+    background: var(--green);
+    border-radius: 50%;
+    flex-shrink: 0;
+    animation: blink 1.2s infinite;
+  }
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: .3; }
+  }
+  .cam-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--green);
+  }
+  .cam-sub {
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 1px;
+  }
 </style>
 </head>
 <body>
 <aside class="sidebar" id="sidebar"></aside>
 <main class="main">
   <div class="topbar">
-    <span class="topbar-title" id="page-title">Live Lecture</span>
+    <span class="topbar-title" id="page-title">Course Records</span>
     <div class="topbar-right">
       <span class="live-dot">Live</span>
       <span id="clock" style="font-family:var(--mono);font-size:12px;color:var(--muted)"></span>
@@ -32,12 +124,107 @@
   </div>
 
   <div class="page-content">
+    <div id="section-courses">
+      <div class="stats-grid" id="teacher-summary-cards">
+        <div class="stat-card blue"><div class="stat-label">Courses</div><div class="stat-value">-</div></div>
+        <div class="stat-card green"><div class="stat-label">Enrollments</div><div class="stat-value">-</div></div>
+        <div class="stat-card amber"><div class="stat-label">Closed Lectures</div><div class="stat-value">-</div></div>
+        <div class="stat-card red"><div class="stat-label">Avg Attendance</div><div class="stat-value">-</div></div>
+      </div>
 
-    <!-- LIVE LECTURE SECTION -->
-    <div id="section-live">
+      <div class="two-col">
+        <div class="panel">
+          <div class="panel-header">
+            <span class="panel-title">Assigned Courses</span>
+            <span class="badge info" id="course-count-badge">0</span>
+          </div>
+          <div style="overflow-x:auto">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Course</th>
+                  <th>Students</th>
+                  <th>Lectures</th>
+                  <th>Avg %</th>
+                </tr>
+              </thead>
+              <tbody id="course-list-body">
+                <tr><td colspan="4"><div class="empty-state"><p>Loading courses...</p></div></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <span class="panel-title">Course Overview</span>
+            <span id="course-overview-badge"></span>
+          </div>
+          <div class="panel-body" id="course-overview-body">
+            <div class="empty-state">
+              <p>Select a course to view all students, attendance till date, and export options.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <div class="toolbar-row" style="width:100%">
+            <span class="panel-title">Student Attendance Detail</span>
+            <input id="student-search" class="search-input" type="text" placeholder="Search by student ID, name, or email" oninput="renderStudentTable()">
+          </div>
+        </div>
+        <div style="overflow-x:auto">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Student ID</th>
+                <th>Name</th>
+                <th>Email</th>
+                <th>Lectures</th>
+                <th>Attended</th>
+                <th>Attendance %</th>
+                <th>Last Present</th>
+                <th>Face</th>
+              </tr>
+            </thead>
+            <tbody id="students-body">
+              <tr><td colspan="8"><div class="empty-state"><p>Select a course first</p></div></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <span class="panel-title">Recent Lecture History</span>
+          <span class="badge neutral" id="lecture-history-badge">0</span>
+        </div>
+        <div style="overflow-x:auto">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Lecture ID</th>
+                <th>Date</th>
+                <th>Room</th>
+                <th>Status</th>
+                <th>Present</th>
+                <th>Attendance %</th>
+              </tr>
+            </thead>
+            <tbody id="lecture-history-body">
+              <tr><td colspan="6"><div class="empty-state"><p>Select a course first</p></div></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div id="section-session" style="display:none">
       <div class="panel" style="margin-bottom:18px">
         <div class="panel-header">
-          <span class="panel-title">Lecture Control</span>
+          <span class="panel-title">Session Control</span>
           <span id="lecture-status-badge"></span>
         </div>
         <div class="panel-body">
@@ -46,20 +233,23 @@
               <label>Classroom</label>
               <select id="classroom-select" onchange="checkActive()"></select>
             </div>
-            <div class="form-group" style="flex:2;min-width:200px;margin:0">
+            <div class="form-group" style="flex:2;min-width:220px;margin:0">
               <label>Subject</label>
               <select id="course-select">
                 <option value="">Auto-detect from schedule</option>
               </select>
             </div>
-            <button class="btn btn-primary" id="start-btn" onclick="startLecture()">▶ Start Attendance</button>
-            <button class="btn btn-danger"  id="end-btn"   onclick="endLecture()" style="display:none">■ End Session</button>
+            <button class="btn btn-primary" id="start-btn" onclick="startLecture()">Start Attendance</button>
+            <button class="btn btn-danger" id="end-btn" onclick="endLecture()" style="display:none">End Session</button>
+          </div>
+          <div class="muted-note">
+            Reopening the same course again on the same day resumes the recent session instead of creating a fresh lecture record.
           </div>
 
           <div class="cam-bar" id="cam-status">
             <div class="cam-dot"></div>
             <div>
-              <div class="cam-label" id="cam-label">Camera Active — Face Recognition Running</div>
+              <div class="cam-label" id="cam-label">Camera active - face recognition running</div>
               <div class="cam-sub" id="cam-detail">Recognition engine running</div>
             </div>
           </div>
@@ -67,10 +257,10 @@
       </div>
 
       <div class="stats-grid" id="live-stats" style="display:none">
-        <div class="stat-card green"> <div class="stat-label">Present</div>   <div class="stat-value" id="stat-present">0</div></div>
-        <div class="stat-card red">   <div class="stat-label">Absent</div>    <div class="stat-value" id="stat-absent">0</div></div>
-        <div class="stat-card blue">  <div class="stat-label">Attendance %</div><div class="stat-value" id="stat-pct">–</div></div>
-        <div class="stat-card amber"> <div class="stat-label">Enrolled</div>  <div class="stat-value" id="stat-enrolled">–</div></div>
+        <div class="stat-card green"><div class="stat-label">Present</div><div class="stat-value" id="stat-present">0</div></div>
+        <div class="stat-card red"><div class="stat-label">Absent</div><div class="stat-value" id="stat-absent">0</div></div>
+        <div class="stat-card blue"><div class="stat-label">Attendance %</div><div class="stat-value" id="stat-pct">-</div></div>
+        <div class="stat-card amber"><div class="stat-label">Enrolled</div><div class="stat-value" id="stat-enrolled">-</div></div>
       </div>
 
       <div class="two-col" id="live-tables" style="display:none">
@@ -83,7 +273,7 @@
             <table class="data-table">
               <thead><tr><th>ID</th><th>Name</th><th>Time</th><th>How</th></tr></thead>
               <tbody id="present-body">
-                <tr><td colspan="4"><div class="empty-state"><p>Waiting for camera…</p></div></td></tr>
+                <tr><td colspan="4"><div class="empty-state"><p>Waiting for camera...</p></div></td></tr>
               </tbody>
             </table>
           </div>
@@ -97,7 +287,7 @@
             <table class="data-table">
               <thead><tr><th>ID</th><th>Name</th><th>Override</th></tr></thead>
               <tbody id="absent-body">
-                <tr><td colspan="3"><div class="empty-state"><p>Waiting…</p></div></td></tr>
+                <tr><td colspan="3"><div class="empty-state"><p>Waiting...</p></div></td></tr>
               </tbody>
             </table>
           </div>
@@ -107,230 +297,477 @@
       <div id="no-lecture-msg" class="panel">
         <div class="panel-body">
           <div class="empty-state">
-            <div class="icon">📡</div>
-            <p>Select a classroom and click <strong>Start Attendance</strong> — camera starts automatically</p>
+            <p>Use Session Control only when you want to run or resume attendance for a course.</p>
           </div>
         </div>
       </div>
     </div>
-
-    <!-- MY COURSES SECTION -->
-    <div id="section-courses" style="display:none">
-      <div class="panel">
-        <div class="panel-header"><span class="panel-title">My Course Statistics</span></div>
-        <div style="overflow-x:auto">
-          <table class="data-table">
-            <thead><tr><th>Course ID</th><th>Name</th><th>Lectures Held</th><th>Avg Attendance</th></tr></thead>
-            <tbody id="courses-body">
-              <tr><td colspan="4"><div class="empty-state"><p>Loading…</p></div></td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-
   </div>
 </main>
 
 <script src="js/api.js"></script>
 <script>
 if (!requireAuth('teacher')) throw new Error('redirect');
+
 const user = getUser();
-let activeLectureId = null, pollInterval = null;
-let windowsMode = false, manualCommand = '';
+let activeLectureId = null;
+let pollInterval = null;
+let windowsMode = false;
+let manualCommand = '';
+let dashboardData = null;
+let teacherCourses = [];
+let selectedCourseId = null;
+let currentCourseDetail = null;
 
 initSidebar('teacher', user.name, user.id, [
-  { icon: '📡', label: 'Live Lecture', active: true,  onclick: "showSection('live',event)" },
-  { icon: '📊', label: 'My Courses',  active: false, onclick: "showSection('courses',event)" },
+  { icon: '[]', label: 'Course Records', active: true, onclick: "showSection('courses', event)" },
+  { icon: '>>', label: 'Session Control', active: false, onclick: "showSection('session', event)" },
 ]);
 
 startClock('clock');
 
 function showSection(name, e) {
-  ['live','courses'].forEach(s =>
-    document.getElementById('section-'+s).style.display = s===name ? '' : 'none'
-  );
-  document.getElementById('page-title').textContent = name === 'live' ? 'Live Lecture' : 'My Courses';
-  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  ['courses', 'session'].forEach(section => {
+    document.getElementById('section-' + section).style.display = section === name ? '' : 'none';
+  });
+  document.getElementById('page-title').textContent = name === 'courses' ? 'Course Records' : 'Session Control';
+  document.querySelectorAll('.nav-item').forEach(item => item.classList.remove('active'));
   if (e && e.target) e.target.closest('.nav-item').classList.add('active');
-  if (name === 'courses') loadCourseStats();
+}
+
+function activateNav(index) {
+  const items = document.querySelectorAll('.sidebar-nav .nav-item');
+  items.forEach(item => item.classList.remove('active'));
+  if (items[index]) items[index].classList.add('active');
 }
 
 async function init() {
-  // Load classrooms dynamically
+  await Promise.all([
+    loadClassrooms(),
+    loadCourseDashboard(false),
+  ]);
+  await checkActive();
+}
+
+async function loadClassrooms() {
   try {
     const rooms = await api.get('/admin/classrooms');
-    const sel = document.getElementById('classroom-select');
-    sel.innerHTML = rooms.map(r =>
-      `<option value="${r.classroom_id}">${r.classroom_id} — ${r.room_number}${r.building ? ', '+r.building : ''}</option>`
+    const select = document.getElementById('classroom-select');
+    select.innerHTML = rooms.map(room =>
+      `<option value="${room.classroom_id}">${room.classroom_id} - ${room.room_number}${room.building ? ', ' + room.building : ''}</option>`
     ).join('');
-  } catch(e) {
-    // Fallback to hardcoded if API fails
+  } catch (error) {
     document.getElementById('classroom-select').innerHTML =
       '<option value="CR-2113">CR-2113</option><option value="CR-LAB">CR-LAB</option>';
   }
+}
 
-  // Load courses
+async function loadCourseDashboard(preserveSelection = true) {
   try {
-    const courses = await api.get('/admin/courses');
-    const sel = document.getElementById('course-select');
-    courses.forEach(c => {
-      const opt = document.createElement('option');
-      opt.value = c.course_id;
-      opt.textContent = c.course_id + ' — ' + c.course_name;
-      sel.appendChild(opt);
-    });
-  } catch(e) {}
+    dashboardData = await api.get('/analytics/teacher/' + user.id + '/dashboard');
+    teacherCourses = dashboardData.courses || [];
+    renderSummaryCards(dashboardData.summary || {});
+    renderCourseList();
+    populateSessionCourses();
 
-  await checkActive();
+    const nextCourseId = preserveSelection && teacherCourses.some(course => course.course_id === selectedCourseId)
+      ? selectedCourseId
+      : (teacherCourses[0]?.course_id || null);
+
+    if (nextCourseId) {
+      await selectCourse(nextCourseId, false);
+    } else {
+      selectedCourseId = null;
+      currentCourseDetail = null;
+      renderCourseOverview();
+      renderStudentTable();
+      renderLectureHistory();
+    }
+  } catch (error) {
+    toast('Failed to load teacher dashboard: ' + error.message, 'error');
+  }
+}
+
+function renderSummaryCards(summary) {
+  document.getElementById('teacher-summary-cards').innerHTML = `
+    <div class="stat-card blue">
+      <div class="stat-label">Courses</div>
+      <div class="stat-value">${summary.total_courses || 0}</div>
+      <div class="stat-sub">Assigned to you</div>
+    </div>
+    <div class="stat-card green">
+      <div class="stat-label">Enrollments</div>
+      <div class="stat-value">${summary.total_students || 0}</div>
+      <div class="stat-sub">Across your courses</div>
+    </div>
+    <div class="stat-card amber">
+      <div class="stat-label">Closed Lectures</div>
+      <div class="stat-value">${summary.total_lectures || 0}</div>
+      <div class="stat-sub">Counted till date</div>
+    </div>
+    <div class="stat-card red">
+      <div class="stat-label">Avg Attendance</div>
+      <div class="stat-value">${summary.avg_attendance_pct || 0}%</div>
+      <div class="stat-sub">Across all courses</div>
+    </div>
+  `;
+}
+
+function renderCourseList() {
+  document.getElementById('course-count-badge').textContent = teacherCourses.length;
+  const body = document.getElementById('course-list-body');
+  if (!teacherCourses.length) {
+    body.innerHTML = '<tr><td colspan="4"><div class="empty-state"><p>No assigned courses found</p></div></td></tr>';
+    return;
+  }
+
+  body.innerHTML = teacherCourses.map(course => `
+    <tr class="course-row ${course.course_id === selectedCourseId ? 'selected' : ''}" onclick="selectCourse('${course.course_id}', true)">
+      <td>
+        <div style="font-family:var(--mono);font-size:12px">${course.course_id}</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:2px">${course.course_name}</div>
+      </td>
+      <td style="font-family:var(--mono)">${course.total_students || 0}</td>
+      <td style="font-family:var(--mono)">${course.total_lectures || 0}</td>
+      <td>${pctBadge(parseFloat(course.avg_attendance_pct) || 0)}</td>
+    </tr>
+  `).join('');
+}
+
+async function selectCourse(courseId, rerenderList = true) {
+  selectedCourseId = courseId;
+  renderCourseList();
+
+  try {
+    currentCourseDetail = await api.get('/analytics/teacher/' + user.id + '/courses/' + courseId);
+    renderCourseOverview();
+    renderStudentTable();
+    renderLectureHistory();
+  } catch (error) {
+    toast('Failed to load course detail: ' + error.message, 'error');
+  }
+}
+
+function renderCourseOverview() {
+  const badge = document.getElementById('course-overview-badge');
+  const body = document.getElementById('course-overview-body');
+
+  if (!currentCourseDetail) {
+    badge.innerHTML = '';
+    body.innerHTML = '<div class="empty-state"><p>Select a course to view details.</p></div>';
+    return;
+  }
+
+  const course = currentCourseDetail.course;
+  const todayStatus = dashboardData?.courses?.find(item => item.course_id === course.course_id)?.today_status || '';
+  badge.innerHTML = todayStatus
+    ? `<span class="badge ${todayStatus === 'active' ? 'good' : 'info'}">${todayStatus === 'active' ? 'Live today' : 'Has session today'}</span>`
+    : '';
+
+  body.innerHTML = `
+    <div class="toolbar-row">
+      <div>
+        <div style="font-size:20px;font-weight:600;color:var(--text)">${course.course_name}</div>
+        <div style="font-family:var(--mono);font-size:13px;color:var(--muted);margin-top:4px">${course.course_id}</div>
+        <div class="course-meta">
+          <span class="badge neutral">${course.department}</span>
+          <span class="badge neutral">Semester ${course.semester}</span>
+          <span class="badge neutral">${course.teacher_names || 'Teacher not assigned'}</span>
+        </div>
+      </div>
+      <div class="toolbar-actions">
+        <button class="btn btn-ghost" onclick="openSessionForSelectedCourse()">Open Session</button>
+        <button class="btn btn-ghost" onclick="downloadReport('excel')">Download Excel</button>
+        <button class="btn btn-primary" onclick="downloadReport('pdf')">Download PDF</button>
+      </div>
+    </div>
+    <div class="course-overview-grid">
+      <div class="mini-stat">
+        <div class="label">Total Students</div>
+        <div class="value">${course.total_students || 0}</div>
+      </div>
+      <div class="mini-stat">
+        <div class="label">Closed Lectures</div>
+        <div class="value">${course.total_lectures || 0}</div>
+      </div>
+      <div class="mini-stat">
+        <div class="label">Average Attendance</div>
+        <div class="value">${course.avg_attendance_pct || 0}%</div>
+      </div>
+      <div class="mini-stat">
+        <div class="label">Credits</div>
+        <div class="value">${course.credits || 0}</div>
+      </div>
+    </div>
+    <div class="muted-note">
+      This view shows attendance till date for every student enrolled in this course. Exports are generated from the same data shown below.
+    </div>
+  `;
+}
+
+function renderStudentTable() {
+  const body = document.getElementById('students-body');
+  if (!currentCourseDetail) {
+    body.innerHTML = '<tr><td colspan="8"><div class="empty-state"><p>Select a course first</p></div></td></tr>';
+    return;
+  }
+
+  const query = document.getElementById('student-search').value.trim().toLowerCase();
+  const students = (currentCourseDetail.students || []).filter(student => {
+    const haystack = `${student.student_id} ${student.name} ${student.email || ''}`.toLowerCase();
+    return !query || haystack.includes(query);
+  });
+
+  if (!students.length) {
+    body.innerHTML = '<tr><td colspan="8"><div class="empty-state"><p>No student matched this filter</p></div></td></tr>';
+    return;
+  }
+
+  body.innerHTML = students.map(student => `
+    <tr>
+      <td style="font-family:var(--mono);font-size:11px;color:var(--muted)">${student.student_id}</td>
+      <td style="font-weight:500">${student.name}</td>
+      <td style="font-size:12px;color:var(--muted)">${student.email || '-'}</td>
+      <td style="font-family:var(--mono)">${student.total_lectures || 0}</td>
+      <td style="font-family:var(--mono)">${student.attended || 0}</td>
+      <td>${pctBadge(parseFloat(student.percentage) || 0)}</td>
+      <td style="font-size:12px">${student.last_present_at ? `${formatDate(student.last_present_at)} ${formatTime(student.last_present_at)}` : '-'}</td>
+      <td><span class="badge ${student.face_registered ? 'good' : 'neutral'}">${student.face_registered ? 'Registered' : 'Missing'}</span></td>
+    </tr>
+  `).join('');
+}
+
+function renderLectureHistory() {
+  const badge = document.getElementById('lecture-history-badge');
+  const body = document.getElementById('lecture-history-body');
+  if (!currentCourseDetail) {
+    badge.textContent = '0';
+    body.innerHTML = '<tr><td colspan="6"><div class="empty-state"><p>Select a course first</p></div></td></tr>';
+    return;
+  }
+
+  const lectures = currentCourseDetail.recent_lectures || [];
+  badge.textContent = lectures.length;
+
+  if (!lectures.length) {
+    body.innerHTML = '<tr><td colspan="6"><div class="empty-state"><p>No lecture history yet</p></div></td></tr>';
+    return;
+  }
+
+  body.innerHTML = lectures.map(lecture => `
+    <tr>
+      <td style="font-family:var(--mono)">${lecture.lecture_id}</td>
+      <td>${formatDate(lecture.start_time)} ${formatTime(lecture.start_time)}</td>
+      <td style="font-family:var(--mono);font-size:12px">${lecture.classroom_id}</td>
+      <td><span class="badge ${lecture.status === 'active' ? 'good' : 'neutral'}">${lecture.status}</span></td>
+      <td style="font-family:var(--mono)">${lecture.present_count || 0}</td>
+      <td>${pctBadge(parseFloat(lecture.percentage) || 0)}</td>
+    </tr>
+  `).join('');
+}
+
+function populateSessionCourses() {
+  const select = document.getElementById('course-select');
+  const currentValue = select.value;
+  select.innerHTML = '<option value="">Auto-detect from schedule</option>' + teacherCourses.map(course =>
+    `<option value="${course.course_id}">${course.course_id} - ${course.course_name}</option>`
+  ).join('');
+
+  if (teacherCourses.some(course => course.course_id === currentValue)) {
+    select.value = currentValue;
+  }
+}
+
+function openSessionForSelectedCourse() {
+  if (!selectedCourseId) {
+    toast('Select a course first', 'warn');
+    return;
+  }
+  document.getElementById('course-select').value = selectedCourseId;
+  showSection('session');
+  activateNav(1);
+}
+
+function downloadReport(format) {
+  if (!selectedCourseId) {
+    toast('Select a course first', 'warn');
+    return;
+  }
+  const url = `${API}/analytics/teacher/${encodeURIComponent(user.id)}/courses/${encodeURIComponent(selectedCourseId)}/export?format=${format}`;
+  const link = document.createElement('a');
+  link.href = url;
+  link.target = '_blank';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
 }
 
 async function checkActive() {
   const classroom = document.getElementById('classroom-select').value;
   if (!classroom) return;
+
   try {
-    const res = await api.get('/lecture/active/' + classroom);
-    if (res.lecture_id) {
-      windowsMode = !!res.windows_mode;
-      manualCommand = res.manual_command || '';
-      activeLectureId = res.lecture_id;
-      onLectureStarted(res.lecture_id, res.camera_active);
+    const response = await api.get('/lecture/active/' + classroom);
+    if (response.lecture_id) {
+      windowsMode = !!response.windows_mode;
+      manualCommand = response.manual_command || '';
+      activeLectureId = response.lecture_id;
+      onLectureStarted(response.lecture_id, response.camera_active, 'existing_active');
     } else {
-      onLectureEnded();
+      activeLectureId = null;
+      onLectureEnded(true);
     }
-  } catch(e) {}
+  } catch (error) {
+    onLectureEnded(true);
+  }
 }
 
 async function startLecture() {
   const classroom = document.getElementById('classroom-select').value;
-  const course_id = document.getElementById('course-select').value || null;
-  const btn = document.getElementById('start-btn');
-  btn.disabled = true;
-  btn.textContent = 'Starting…';
+  const courseId = document.getElementById('course-select').value || null;
+  const button = document.getElementById('start-btn');
+  button.disabled = true;
+  button.textContent = 'Starting...';
+
   try {
-    const res = await api.post('/lecture/start', {
-      classroom_id: classroom, course_id, teacher_id: user.id, force: true
+    const response = await api.post('/lecture/start', {
+      classroom_id: classroom,
+      course_id: courseId,
+      teacher_id: user.id,
+      force: true,
     });
-    windowsMode = !!res.windows_mode;
-    manualCommand = res.manual_command || '';
-    activeLectureId = res.lecture_id;
-    onLectureStarted(res.lecture_id, !!res.camera_active);
-    if (windowsMode && !res.camera_active) {
-      toast('Attendance started. If the camera window did not open, run the manual command shown in the classroom view.', 'warn');
+
+    activeLectureId = response.lecture_id;
+    windowsMode = !!response.windows_mode;
+    manualCommand = response.manual_command || '';
+    onLectureStarted(response.lecture_id, !!response.camera_active, response.session_status || 'started_new');
+
+    if (response.resumed_today) {
+      toast('Resumed the same session for today. No new lecture was created.', 'success');
+    } else if (windowsMode && !response.camera_active) {
+      toast('Session started. If the camera did not open, use the manual command shown below.', 'warn');
     } else {
-      toast('Attendance started — camera is live', 'success');
+      toast('Attendance session started.', 'success');
     }
-  } catch(e) {
-    toast('Could not start: ' + e.message, 'error');
-    btn.disabled = false;
-    btn.textContent = '▶ Start Attendance';
+    await loadCourseDashboard(true);
+  } catch (error) {
+    toast('Could not start session: ' + error.message, 'error');
+    button.disabled = false;
+    button.textContent = 'Start Attendance';
   }
 }
 
 async function endLecture() {
-  if (!activeLectureId || !confirm('End session? Attendance will be locked.')) return;
+  if (!activeLectureId || !confirm('End this session? You can reopen the same day session later if needed.')) return;
   try {
     await api.post('/lecture/end', { lecture_id: activeLectureId });
     activeLectureId = null;
-    if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
-    onLectureEnded();
-    toast('Session ended and locked', 'info');
-  } catch(e) { toast('Error: ' + e.message, 'error'); }
+    onLectureEnded(true);
+    await loadCourseDashboard(true);
+    toast('Session ended.', 'info');
+  } catch (error) {
+    toast('Error ending session: ' + error.message, 'error');
+  }
 }
 
-function onLectureStarted(lectureId, cameraActive) {
-  document.getElementById('start-btn').style.display  = 'none';
-  document.getElementById('end-btn').style.display    = '';
+function onLectureStarted(lectureId, cameraActive, sessionStatus) {
+  document.getElementById('start-btn').style.display = 'none';
+  document.getElementById('end-btn').style.display = '';
   document.getElementById('live-stats').style.display = '';
-  document.getElementById('live-tables').style.display= '';
+  document.getElementById('live-tables').style.display = '';
   document.getElementById('no-lecture-msg').style.display = 'none';
-  document.getElementById('lecture-status-badge').innerHTML =
-    `<span class="badge good">Session #${lectureId}</span>`;
+
+  let label = `Session #${lectureId}`;
+  if (sessionStatus === 'resumed_today') label = `Resumed #${lectureId}`;
+  if (sessionStatus === 'existing_active') label = `Active #${lectureId}`;
+  document.getElementById('lecture-status-badge').innerHTML = `<span class="badge good">${label}</span>`;
+
   const cam = document.getElementById('cam-status');
   cam.style.display = 'flex';
   document.getElementById('cam-label').textContent = (windowsMode && !cameraActive)
-    ? 'Session Active — Camera Runs In Separate Terminal'
-    : 'Camera Active — Face Recognition Running';
+    ? 'Session active - camera runs in a separate terminal'
+    : 'Camera active - face recognition running';
   document.getElementById('cam-detail').textContent = (windowsMode && !cameraActive)
     ? `Run manually if needed: ${manualCommand}`
     : cameraActive
-      ? 'Camera running · scanning every frame automatically'
-      : 'Camera starting up…';
+      ? 'Camera is running and existing attendance stays attached to this same session.'
+      : 'Camera is starting up...';
+
   if (!pollInterval) {
     pollLive();
     pollInterval = setInterval(pollLive, 4000);
   }
 }
 
-function onLectureEnded() {
-  document.getElementById('start-btn').style.display   = '';
-  document.getElementById('start-btn').disabled        = false;
-  document.getElementById('start-btn').textContent     = '▶ Start Attendance';
-  document.getElementById('end-btn').style.display     = 'none';
-  document.getElementById('live-stats').style.display  = 'none';
+function onLectureEnded(resetBadge = true) {
+  document.getElementById('start-btn').style.display = '';
+  document.getElementById('start-btn').disabled = false;
+  document.getElementById('start-btn').textContent = 'Start Attendance';
+  document.getElementById('end-btn').style.display = 'none';
+  document.getElementById('live-stats').style.display = 'none';
   document.getElementById('live-tables').style.display = 'none';
   document.getElementById('no-lecture-msg').style.display = '';
-  document.getElementById('cam-status').style.display  = 'none';
-  document.getElementById('cam-label').textContent     = 'Camera Active — Face Recognition Running';
-  document.getElementById('lecture-status-badge').innerHTML = '';
+  document.getElementById('cam-status').style.display = 'none';
+  document.getElementById('cam-label').textContent = 'Camera active - face recognition running';
+  document.getElementById('cam-detail').textContent = 'Recognition engine running';
+  if (resetBadge) document.getElementById('lecture-status-badge').innerHTML = '';
   windowsMode = false;
   manualCommand = '';
-  if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
+  if (pollInterval) {
+    clearInterval(pollInterval);
+    pollInterval = null;
+  }
 }
 
 async function pollLive() {
   if (!activeLectureId) return;
   try {
-    const snap = await api.get('/lecture/' + activeLectureId + '/live');
-    document.getElementById('stat-present').textContent  = snap.present;
-    document.getElementById('stat-absent').textContent   = snap.absent;
-    document.getElementById('stat-pct').textContent      = snap.percentage + '%';
-    document.getElementById('stat-enrolled').textContent = snap.enrolled;
-    document.getElementById('present-count').textContent = snap.present;
-    document.getElementById('absent-count').textContent  = snap.absent;
+    const snapshot = await api.get('/lecture/' + activeLectureId + '/live');
+    document.getElementById('stat-present').textContent = snapshot.present;
+    document.getElementById('stat-absent').textContent = snapshot.absent;
+    document.getElementById('stat-pct').textContent = snapshot.percentage + '%';
+    document.getElementById('stat-enrolled').textContent = snapshot.enrolled;
+    document.getElementById('present-count').textContent = snapshot.present;
+    document.getElementById('absent-count').textContent = snapshot.absent;
 
-    const pl = await api.get('/attendance/list/' + activeLectureId);
-    document.getElementById('present-body').innerHTML = pl.length
-      ? pl.map(p => `<tr>
-          <td style="font-family:var(--mono);font-size:11px;color:var(--muted)">${p.student_id}</td>
-          <td style="font-weight:500">${p.name}</td>
-          <td style="font-family:var(--mono);font-size:11px">${formatTime(p.timestamp)}</td>
-          <td><span class="badge ${p.source==='face_recognition'?'good':'info'}">${p.source==='face_recognition'?'👁 Face':'✏ Manual'}</span></td>
-        </tr>`).join('')
-      : '<tr><td colspan="4"><div class="empty-state"><p>Camera scanning… no matches yet</p></div></td></tr>';
+    const presentList = await api.get('/attendance/list/' + activeLectureId);
+    document.getElementById('present-body').innerHTML = presentList.length
+      ? presentList.map(row => `
+          <tr>
+            <td style="font-family:var(--mono);font-size:11px;color:var(--muted)">${row.student_id}</td>
+            <td style="font-weight:500">${row.name}</td>
+            <td style="font-family:var(--mono);font-size:11px">${formatTime(row.timestamp)}</td>
+            <td><span class="badge ${row.source === 'face_recognition' ? 'good' : 'info'}">${row.source === 'face_recognition' ? 'Face' : 'Manual'}</span></td>
+          </tr>
+        `).join('')
+      : '<tr><td colspan="4"><div class="empty-state"><p>Camera is scanning... no matches yet</p></div></td></tr>';
 
-    document.getElementById('absent-body').innerHTML = snap.absent_students?.length
-      ? snap.absent_students.map(s => `<tr>
-          <td style="font-family:var(--mono);font-size:11px;color:var(--muted)">${s.student_id}</td>
-          <td>${s.name}</td>
-          <td><button class="btn btn-ghost" style="padding:4px 10px;font-size:11px" onclick="markPresent('${s.student_id}','${s.name}')">Mark Present</button></td>
-        </tr>`).join('')
-      : '<tr><td colspan="3"><div class="empty-state"><p>Everyone present!</p></div></td></tr>';
-  } catch(e) {}
+    document.getElementById('absent-body').innerHTML = snapshot.absent_students?.length
+      ? snapshot.absent_students.map(student => `
+          <tr>
+            <td style="font-family:var(--mono);font-size:11px;color:var(--muted)">${student.student_id}</td>
+            <td>${student.name}</td>
+            <td><button class="btn btn-ghost" style="padding:4px 10px;font-size:11px" onclick="markPresent('${student.student_id}', '${student.name.replace(/'/g, "\\'")}')">Mark Present</button></td>
+          </tr>
+        `).join('')
+      : '<tr><td colspan="3"><div class="empty-state"><p>Everyone is present.</p></div></td></tr>';
+  } catch (error) {
+  }
 }
 
-async function markPresent(studentId, name) {
+async function markPresent(studentId, studentName) {
   try {
     await api.post('/attendance/override', {
-      student_id: studentId, lecture_id: activeLectureId, teacher_id: user.id, present: true
+      student_id: studentId,
+      lecture_id: activeLectureId,
+      teacher_id: user.id,
+      present: true,
     });
-    toast('Marked present: ' + name, 'success');
+    toast('Marked present: ' + studentName, 'success');
     await pollLive();
-  } catch(e) { toast('Override failed', 'error'); }
-}
-
-async function loadCourseStats() {
-  try {
-    const data = await api.get('/analytics/teacher/' + user.id);
-    document.getElementById('courses-body').innerHTML = data.length
-      ? data.map(c => `<tr>
-          <td style="font-family:var(--mono);font-size:12px">${c.course_id}</td>
-          <td style="font-weight:500">${c.course_name}</td>
-          <td style="font-family:var(--mono)">${c.total_lectures}</td>
-          <td>${pctBadge(parseFloat(c.avg_attendance_pct)||0)}</td>
-        </tr>`).join('')
-      : '<tr><td colspan="4"><div class="empty-state"><p>No lectures held yet</p></div></td></tr>';
-  } catch(e) { toast('Failed to load course stats', 'error'); }
+  } catch (error) {
+    toast('Override failed: ' + error.message, 'error');
+  }
 }
 
 init();

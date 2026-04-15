@@ -8,6 +8,7 @@ Responsibilities:
   - Duplicate marks are silently ignored (UNIQUE constraint is the guard)
 """
 
+import json
 import logging
 from datetime import datetime, timezone
 
@@ -41,21 +42,19 @@ async def mark_attendance(
             )
 
             # Audit trail
+            detail = json.dumps({
+                "lecture_id": int(lecture_id),
+                "source": source,
+                "ts": datetime.now(timezone.utc).isoformat(),
+            })
             await conn.execute(
                 """
                 INSERT INTO audit_log (event_type, actor_id, target_id, detail)
-                VALUES ('attendance_marked', $1, $2,
-                        jsonb_build_object(
-                            'lecture_id', $3::INT,
-                            'source', $4::TEXT,
-                            'ts', $5::TEXT
-                        ))
+                VALUES ('attendance_marked', $1, $2, $3::JSONB)
                 """,
                 marked_by or "system",
                 student_id,
-                lecture_id,
-                source,
-                datetime.now(timezone.utc).isoformat(),
+                detail,
             )
 
         logger.info("✔ Attendance marked  student=%s  lecture=%d  via=%s",
@@ -83,6 +82,11 @@ async def manual_override(
     - present=True  → INSERT or do nothing (already marked present)
     - present=False → DELETE the attendance record if it exists
     """
+    action = "marked_present" if present else "marked_absent"
+    detail = json.dumps({
+        "lecture_id": int(lecture_id),
+        "action": action,
+    })
     async with transaction() as conn:
         if present:
             await conn.execute(
@@ -93,7 +97,6 @@ async def manual_override(
                 """,
                 student_id, lecture_id, teacher_id,
             )
-            action = "marked_present"
         else:
             await conn.execute(
                 """
@@ -102,18 +105,13 @@ async def manual_override(
                 """,
                 student_id, lecture_id,
             )
-            action = "marked_absent"
 
         await conn.execute(
             """
             INSERT INTO audit_log (event_type, actor_id, target_id, detail)
-            VALUES ('manual_override', $1, $2,
-                    jsonb_build_object(
-                        'lecture_id', $3::INT,
-                        'action', $4::TEXT
-                    ))
+            VALUES ('manual_override', $1, $2, $3::JSONB)
             """,
-            teacher_id, student_id, lecture_id, action,
+            teacher_id, student_id, detail,
         )
 
     logger.info("Manual override  teacher=%s  student=%s  lecture=%d  action=%s",
