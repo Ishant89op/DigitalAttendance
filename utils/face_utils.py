@@ -7,6 +7,8 @@ recognizer runs in a single dedicated thread so this is fine.
 """
 
 import logging
+from dataclasses import dataclass
+
 import numpy as np
 from insightface.app import FaceAnalysis
 
@@ -14,6 +16,15 @@ from config.settings import recog as cfg
 from core.database import get_conn
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class FaceMatch:
+    index: int | None
+    score: float
+    second_score: float
+    margin: float
+    accepted: bool
 
 # ─────────────────────────────────────────────
 # MODEL SINGLETON
@@ -63,7 +74,7 @@ async def load_known_faces() -> tuple[np.ndarray, list[str], list[str]]:
             logger.warning("Skipping %s — unexpected embedding dim %d",
                            row["student_id"], vec.shape[0])
             continue
-        encodings.append(vec)
+        encodings.append(normalize(vec))
         names.append(row["name"])
         ids.append(row["student_id"])
 
@@ -88,25 +99,38 @@ def cosine_match(
     query: np.ndarray,
     known_matrix: np.ndarray,
     threshold: float = cfg.similarity_threshold,
-) -> tuple[int | None, float]:
+) -> FaceMatch:
     """
     Find the best match for `query` in `known_matrix`.
 
     Args:
-        query        : (D,) normalized embedding
+        query        : (D,) embedding vector
         known_matrix : (N, D) normalized embeddings
         threshold    : minimum cosine similarity to accept
 
     Returns:
-        (best_index, best_score) or (None, score) if below threshold
+        FaceMatch with the best score and whether the match is safe to accept.
     """
     if known_matrix.shape[0] == 0:
-        return None, 0.0
+        return FaceMatch(None, 0.0, 0.0, 0.0, False)
 
+    query = normalize(np.asarray(query, dtype=np.float32))
     similarities = known_matrix @ query          # (N,) dot products
     best_idx = int(np.argmax(similarities))
     best_score = float(similarities[best_idx])
+    if similarities.shape[0] > 1:
+        second_score = float(np.partition(similarities, -2)[-2])
+    else:
+        second_score = -1.0
+    margin = best_score - second_score
 
-    if best_score >= threshold:
-        return best_idx, best_score
-    return None, best_score
+    accepted = best_score >= threshold and (
+        similarities.shape[0] == 1 or margin >= cfg.match_margin
+    )
+    return FaceMatch(
+        best_idx if accepted else None,
+        best_score,
+        second_score,
+        margin,
+        accepted,
+    )

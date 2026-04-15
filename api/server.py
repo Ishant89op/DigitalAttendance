@@ -13,12 +13,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from api.routers import admin, analytics, attendance
 from config.settings import api as api_cfg
 from core.database import init_pool, close_pool
-from core.recognition_manager import stop_all
+from core.recognition_manager import cleanup_dead_sessions, stop_all
 from migrations.schema import run_migrations
-from api.routers import lecture
+from api.routers import lecture, attendance, analytics, admin
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +33,7 @@ async def lifespan(app: FastAPI):
     logger.info("Starting up AttendX API ...")
     await init_pool()
     await run_migrations()
+    await cleanup_dead_sessions()
     logger.info("Database ready.")
     yield
     # ── Shutdown ──

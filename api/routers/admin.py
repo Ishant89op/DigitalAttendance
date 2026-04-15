@@ -199,7 +199,11 @@ async def add_classroom(data: ClassroomCreate):
 async def list_classrooms():
     async with get_conn() as conn:
         rows = await conn.fetch(
-            "SELECT classroom_id, room_number, building, capacity FROM classrooms ORDER BY classroom_id"
+            """
+            SELECT classroom_id, room_number, building, capacity, access_pin
+            FROM classrooms
+            ORDER BY classroom_id
+            """
         )
     return [dict(r) for r in rows]
 

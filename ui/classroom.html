@@ -197,6 +197,7 @@ let pollInterval     = null;
 let refreshInterval  = null;
 let isWindowsMode    = false;
 let manualCmd        = '';
+const STALE_THRESHOLD_MINUTES = 15;
 
 initSidebar('classroom', classroomId, building || 'Classroom Device', [
   { icon: '📡', label: 'Live View', active: true, onclick: "" },
@@ -214,13 +215,13 @@ async function init() {
 async function refreshState() {
   try {
     const res = await api.get('/lecture/upcoming/' + classroomId);
-    if (res.windows_mode !== undefined) isWindowsMode = res.windows_mode;
-    
+    isWindowsMode = !!res.windows_mode;
+    manualCmd = res.manual_command || manualCmd;
     if (res.active_lecture_id) {
-      // Check if this looks like a stale session:
-      // active_lecture_id exists but camera is NOT running and we just loaded the page
-      // On Windows, the camera is often untracked (manual terminal), so we shouldn't assume stale
-      const appearsStale = !res.camera_active && !activeLectureId && !isWindowsMode;
+      const appearsStale = await shouldShowStaleBanner(
+        res.active_lecture_id,
+        res.camera_active
+      );
       if (appearsStale) {
         showStaleBanner(res.active_lecture_id);
       } else {
@@ -235,6 +236,20 @@ async function refreshState() {
     }
   } catch(e) {
     toast('Cannot reach server — ' + e.message, 'error');
+  }
+}
+
+async function shouldShowStaleBanner(lectureId, cameraActive) {
+  if (cameraActive) return false;
+
+  try {
+    const detail = await api.get('/lecture/' + lectureId);
+    const startedMs = new Date(detail.start_time).getTime();
+    if (!Number.isFinite(startedMs)) return false;
+    const ageMinutes = (Date.now() - startedMs) / 60000;
+    return ageMinutes >= STALE_THRESHOLD_MINUTES;
+  } catch(e) {
+    return false;
   }
 }
 
@@ -318,16 +333,16 @@ async function startLecture(courseId, courseName) {
     });
 
     activeLectureId = res.lecture_id;
-    isWindowsMode   = res.windows_mode || false;
+    isWindowsMode   = !!res.windows_mode;
     manualCmd       = res.manual_command || '';
 
-    if (isWindowsMode && manualCmd) {
+    if (isWindowsMode && !res.camera_active && manualCmd) {
       toast('Lecture started — open a NEW terminal and run the shown command to start the camera', 'info');
     } else {
       toast('Attendance started — camera is active', 'success');
     }
 
-    await showActiveSession(res.lecture_id, res.camera_started);
+    await showActiveSession(res.lecture_id, !!res.camera_active);
   } catch(e) {
     toast('Could not start: ' + e.message, 'error');
     cards.forEach(c => { c.style.opacity = ''; c.style.pointerEvents = ''; });
@@ -336,17 +351,13 @@ async function startLecture(courseId, courseName) {
 
 // ── ACTIVE SESSION ────────────────────────────────────────────────
 async function showActiveSession(lectureId, cameraActive) {
+  hideStaleBanner();
   document.getElementById('upcoming-section').style.display = 'none';
   document.getElementById('active-section').style.display   = '';
 
   // Show Windows manual-command banner if needed
   const winBanner = document.getElementById('win-cmd-banner');
-  if (isWindowsMode && manualCmd) {
-    document.getElementById('win-cmd-text').textContent = manualCmd;
-    winBanner.style.display = '';
-  } else if (!cameraActive && isWindowsMode) {
-    // We are in Windows mode (loaded page with existing active lecture)
-    manualCmd = `python main.py recognize --classroom ${classroomId}`;
+  if (isWindowsMode && !cameraActive && manualCmd) {
     document.getElementById('win-cmd-text').textContent = manualCmd;
     winBanner.style.display = '';
   } else {
@@ -362,13 +373,17 @@ async function showActiveSession(lectureId, cameraActive) {
   document.getElementById('active-lecture-badge').textContent = 'Session #' + lectureId;
 
   if (isWindowsMode) {
-    document.getElementById('cam-status-text').textContent = 'Session Active — Camera in separate terminal';
-    document.getElementById('cam-detail').textContent = 'Run the command above in a new PowerShell window';
+    document.getElementById('cam-status-text').textContent = cameraActive
+      ? 'Camera Active — Face Recognition Running'
+      : 'Session Active — Camera runs in a separate terminal';
+    document.getElementById('cam-detail').textContent = cameraActive
+      ? 'Recognition engine is running in its own window'
+      : 'Run the command above in a new PowerShell window';
   } else {
     document.getElementById('cam-status-text').textContent = 'Camera Active — Face Recognition Running';
     document.getElementById('cam-detail').textContent = cameraActive
       ? 'Recognition engine running · scanning every frame'
-      : 'Camera starting up…';
+      : 'Waiting for recognition process to attach…';
   }
 
   await pollLive();

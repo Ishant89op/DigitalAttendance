@@ -1,10 +1,8 @@
 # AttendX — Smart Digital Attendance System
 
 > Biometric face-recognition attendance platform for universities.  
-> Designed for multi-classroom deployment with a FastAPI backend, PostgreSQL/SQLite database,  
+> Designed for multi-classroom deployment with a FastAPI backend, PostgreSQL database,  
 > InsightFace recognition engine, and a browser-based UI for admins, teachers, and students.
-
-> **Platform note:** The recognition engine runs fully automatically in the background on all platforms (Windows, Linux, macOS). No manual terminal commands are required from the classroom device operator.
 
 ---
 
@@ -39,11 +37,10 @@ AttendX automates classroom attendance for institutions using real-time face rec
 - Opens a face registration window at the start of a semester. Students walk up, enter their ID, and the camera captures 20 face samples to build a biometric profile.
 
 **Classroom device (per-lecture, ~2 minutes)**
-- Any device (laptop, tablet) placed in the classroom logs in using classroom ID + PIN.
+- Any device (laptop, tablet) placed in the classroom logs in.
 - The system suggests the next scheduled lecture for that room automatically.
-- The teacher (or device itself) presses "Start Attendance".
-- The recognition engine launches automatically in the background — no terminal window appears, no manual command is needed.
-- The camera overlay window opens showing live face-detection results with labeled bounding boxes.
+- The teacher (or device itself) presses "Start Attendance."
+- A background camera process launches, reads faces, and marks attendance in real time.
 - Up to 4 devices can be active in the same classroom simultaneously; they all write to the same lecture session.
 - After class, "End Session" closes the lecture and stops the camera.
 
@@ -89,13 +86,10 @@ AttendX automates classroom attendance for institutions using real-time face rec
 │  schedule_service│   │  Spawns one subprocess per classroom      │
 │  analytics_svc   │   │  when a lecture starts.                   │
 │  csv_service     │   │  Kills it when the lecture ends.          │
-│                  │   │  Windows: CREATE_NO_WINDOW flag —         │
-└───────┬──────────┘   │  no terminal popup for the user.         │
-        │              └───────────┬──────────────────────────────┘
-        │                          │ subprocess.Popen (Windows)
-        │                          │ asyncio.create_subprocess_exec (Linux/Mac)
+└───────┬──────────┘   └───────────┬──────────────────────────────┘
+        │                          │ asyncio.create_subprocess_exec
 ┌───────▼──────────────────────────▼──────────────────────────────┐
-│               PostgreSQL 14+  or  SQLite (local dev)             │
+│                         PostgreSQL 14+                           │
 │  asyncpg connection pool (min=2, max=10)                        │
 │  All queries use $1 $2 ... positional placeholders              │
 └─────────────────────────────────────────────────────────────────┘
@@ -104,17 +98,15 @@ AttendX automates classroom attendance for institutions using real-time face rec
 ┌───────┴──────────────────────────────────────────────────────────┐
 │              Recognition Engine  (recognition/recognizer.py)      │
 │                                                                   │
-│  cv2.VideoCapture(CAP_DSHOW)  →  MJPG, buffer=1, 640×480        │
-│  →  InsightFace buffalo_l (det_size=320×320, warm-up on start)   │
-│  →  cosine match (every 2nd frame)  →  3-frame buffer            │
-│  →  mark_attendance                                               │
-│  DB lecture poll: every 5s  |  Face DB reload: every 60s         │
+│  cv2.VideoCapture(0)  →  InsightFace buffalo_l                   │
+│  →  cosine similarity match  →  3-frame buffer  →  mark_attendance│
+│  Reloads face DB from PostgreSQL every 60 seconds                │
+│  Processes up to 6 faces per frame                               │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
 **Why subprocesses for the camera?**  
-The camera loop is CPU-bound (model inference). Running it inside the FastAPI async event loop would freeze the entire API. A separate OS process keeps the API fully responsive and allows multiple classrooms to run cameras concurrently.  
-On Windows the subprocess uses `CREATE_NO_WINDOW` so no terminal window pops up for the user.
+The camera loop is a blocking, CPU-bound operation. Running it inside the FastAPI async event loop would freeze the entire API. A separate OS process keeps the API fully responsive and allows multiple classrooms to run cameras concurrently without interfering with each other.
 
 ---
 
@@ -322,33 +314,27 @@ When a lecture is started, `schedule_service.get_current_course(classroom_id)` q
 `lecture_service.start_lecture()` resolves course_id (from schedule, or passed explicitly), checks no lecture is already active for that room, and inserts a row into `lecture_sessions` with `status = 'active'`.
 
 ### Step 3 — Recognition process spawn
-`core/recognition_manager.start_recognition_process(classroom_id)` spawns a background subprocess running `python main.py recognize --classroom <id>`.  
-- **Windows:** uses `subprocess.Popen` with `CREATE_NO_WINDOW` flag — no terminal window appears, process runs fully hidden.  
-- **Linux/Mac:** uses `asyncio.create_subprocess_exec` as a background async process.  
-The subprocess inherits environment variables including `CLASSROOM_ID`.
+`core/recognition_manager.start_recognition_process(classroom_id)` spawns a subprocess running `python main.py recognize --classroom <id>`. The subprocess inherits environment variables including `CLASSROOM_ID`.
 
 ### Step 4 — Camera loop (inside the subprocess)
 The recognizer (`recognition/recognizer.py`) runs the following loop at ~25 fps:
 
 ```
-1. Open camera with MJPG codec, buffersize=1, 640×480 @ 30fps (low-latency)
-2. Warm-up: feed blank frame so ONNX JIT-compiles before first real frame
-3. Every LECTURE_POLL_SECS (5s): poll DB for active lecture_id
-4. Every RELOAD_INTERVAL_SECS (60s): reload face embeddings from DB
-5. Read a frame (cap.read() always gives the newest frame — no queue backlog)
-6. Every DETECT_EVERY_N (2nd) frame only: run InsightFace model.get(frame)
-   a. Sort detected faces by area (largest first), take top 6
-   b. For each face: cosine_match(embedding, known_matrix) → (idx, score)
-   c. If score ≥ 0.50: increment frame_buffer[student_id]
-   d. If frame_buffer[student_id] ≥ 3 AND not on 30s cooldown:
+1. Reload face embeddings from DB (every 60 seconds)
+2. Check get_active_lecture(classroom_id) → lecture_id
+3. Read a frame from cv2.VideoCapture(0)
+4. Run InsightFace model.get(frame) → list of detected faces
+5. Sort faces by area (largest first), take top 6
+6. For each face:
+   a. cosine_match(embedding, known_matrix) → (idx, score)
+   b. If score ≥ 0.50 threshold: increment frame_buffer[student_id]
+   c. If frame_buffer[student_id] ≥ 3 consecutive frames AND not on 30s cooldown:
       → mark_attendance(student_id, lecture_id)
       → reset frame_buffer[student_id]
       → set last_seen[student_id] = now
-7. Redraw overlay every frame (using cached faces from last detection pass)
-8. Sleep for remaining inter-frame budget (target - elapsed) — compensated sleep
 ```
 
-The 3-frame buffer prevents false positives from a passing face. The 30-second cooldown prevents the same student being marked multiple times. Running detection only on every 2nd frame halves CPU usage while keeping the display at full fluency.
+The 3-frame buffer prevents false positives from a passing face. The 30-second cooldown prevents the same student being marked multiple times in one session.
 
 ### Step 5 — Attendance record
 `attendance_manager.mark_attendance()` inserts into `attendance` with `source = 'face_recognition'` and writes to `audit_log`. Duplicate marks are silently ignored via the UNIQUE constraint.
@@ -494,7 +480,7 @@ CLASSROOM_ID=CR-2113
 | Setting | Default | Description |
 |---|---|---|
 | `recog.model_name` | `buffalo_l` | InsightFace model pack |
-| `recog.det_size` | `(320, 320)` | Face detection resolution — 320×320 is ~4× faster than 640×640 on CPU with identical accuracy at ≤3m |
+| `recog.det_size` | `(640, 640)` | Face detection resolution |
 | `recog.ctx_id` | `-1` | `-1` = CPU, `0` = first GPU |
 | `recog.similarity_threshold` | `0.50` | Minimum cosine similarity to accept a match |
 | `recog.cooldown_seconds` | `30` | Seconds before same student can be marked again |
@@ -506,23 +492,13 @@ CLASSROOM_ID=CR-2113
 | `db.pool_min` | `2` | Minimum DB connections |
 | `db.pool_max` | `10` | Maximum DB connections |
 
-### `recognition/recognizer.py` — runtime tuning constants
-
-| Constant | Default | Description |
-|---|---|---|
-| `TARGET_FPS` | `25` | Target display frame rate |
-| `DETECT_EVERY_N` | `2` | Run model inference every N frames (1 = every frame) |
-| `LECTURE_POLL_SECS` | `5` | How often to query DB for the active lecture |
-| `RELOAD_INTERVAL_SECS` | `60` | How often to reload face embeddings from DB |
-| `RECOGNITION_BUFFER` | `3` | Consecutive matched frames before marking attendance |
-
 ---
 
 ## 9. Setup & Installation
 
 ### Prerequisites
-- Python 3.12 recommended
-- SQLite for local development, or PostgreSQL 14+ for the production-style setup
+- Python 3.11+
+- PostgreSQL 14+
 - A webcam (for recognition and registration terminals)
 - Git
 
@@ -535,7 +511,7 @@ cd DigitalAttendance
 
 # Create virtual environment
 python -m venv venv
-source venv/bin/activate       # Windows PowerShell: .\venv\Scripts\Activate.ps1
+source venv/bin/activate       # Windows: venv\Scripts\activate
 
 # Install dependencies
 pip install -r requirements.txt
@@ -545,44 +521,12 @@ pip install -r requirements.txt
 
 ### Database setup
 
-#### Local development
-
-The project now defaults to a local SQLite database file, so you can run it
-without installing PostgreSQL.
-
-```bash
-# 1. Configure .env
-cp .env.example .env          # Windows PowerShell: Copy-Item .env.example .env
-
-# 2. Keep the default local DB mode
-# DB_ENGINE=sqlite
-# DB_PATH=attendance_system.db
-
-# 3. Run schema migrations
-python main.py db
-```
-
-This creates `attendance_system.db` in the project root.
-
-#### PostgreSQL setup
-
-If you want the original PostgreSQL-backed setup, change `.env` to:
-
-```env
-DB_ENGINE=postgresql
-DB_HOST=localhost
-DB_PORT=5432
-DB_NAME=attendance_system
-DB_USER=postgres
-DB_PASSWORD=your_password_here
-```
-
 ```bash
 # 1. Create the PostgreSQL database
 psql -U postgres -c "CREATE DATABASE attendance_system;"
 
 # 2. Configure .env
-cp .env.example .env          # Windows PowerShell: Copy-Item .env.example .env
+cp .env .env.backup
 # Edit .env — fill in DB_HOST, DB_NAME, DB_USER, DB_PASSWORD
 
 # 3. Run schema migrations
@@ -610,9 +554,6 @@ psql -U postgres -d attendance_system -f seed.sql
 ```
 
 This loads 2 classrooms, 6 CSE Sem-4 courses, 6 teachers, 5 students, and a full weekly timetable based on IIIT Vadodara's CSE Sem-4 schedule.
-
-`seed.sql` is intended for PostgreSQL. For SQLite local mode, use the admin CSV
-upload endpoints or add records through the UI/API.
 
 ### Open the frontend
 
@@ -700,34 +641,18 @@ File: `recognition/recognizer.py`
 
 ### Key constants (at top of file)
 
-| Constant | Default | Effect |
+| Constant | Value | Effect |
 |---|---|---|
-| `RECOGNITION_BUFFER` | `3` | Consecutive matching frames before marking attendance |
-| `RELOAD_INTERVAL_SECS` | `60` | How often face DB is refreshed from storage |
-| `LECTURE_POLL_SECS` | `5` | How often DB is polled for active lecture (not per-frame) |
-| `TARGET_FPS` | `25` | Target display / processing frame rate |
-| `DETECT_EVERY_N` | `2` | Run model inference every N frames (skipped frames reuse last overlay) |
+| `RECOGNITION_BUFFER` | `3` | Consecutive matching frames before marking |
+| `RELOAD_INTERVAL_SECS` | `60` | How often face DB is refreshed from PostgreSQL |
+| `WAIT_POLL_SECS` | `3` | Poll interval when no active lecture |
 | `AUTO_START` | `True` | Auto-create lecture from schedule if none active |
-
-### Performance architecture
-
-The recognizer is designed for smooth, low-CPU operation:
-
-1. **MJPG codec + buffer=1** — `cv2.VideoCapture` is opened with `CAP_DSHOW` (Windows) and `CAP_PROP_BUFFERSIZE=1`. This discards stale buffered frames so `cap.read()` always returns the *latest* frame with minimal latency.
-
-2. **Pre-warmed model** — A blank frame is fed through InsightFace immediately after startup so ONNX JIT-compiles its kernels before the first real frame arrives, eliminating the first-frame stutter.
-
-3. **Detection throttling** — Face detection runs only on every `DETECT_EVERY_N` frames (default: every 2nd frame). Intermediate frames redraw the overlay using the cached bounding boxes from the last detection pass. This halves CPU inference cost while keeping video display at full FPS.
-
-4. **DB poll decoupled from camera loop** — `get_active_lecture()` is called only every `LECTURE_POLL_SECS` seconds, not every frame. This eliminates 25 unnecessary DB round-trips per second.
-
-5. **Timing-compensated sleep** — The inter-frame sleep is `max(0, target_interval - elapsed_time)`, so DB/inference jitter does not accumulate into visible lag.
 
 ### InsightFace `buffalo_l` model
 - Detects and embeds faces in a single `model.get(frame)` call.
 - Returns a list of `Face` objects, each with `.bbox`, `.embedding` (512-dim float32), `.det_score`.
-- Detection resolution is `320×320` — approximately 4× faster on CPU than the original 640×640, with identical accuracy for faces within 3 metres of the camera.
-- Camera capture is `640×480 @ 30fps`.
+- Detection resolution is set to `640×640` in settings for a balance of speed and accuracy.
+- The camera is explicitly set to `640×480` capture to keep frame processing fast.
 
 ### Cosine similarity matching
 `utils/face_utils.cosine_match()` performs:
@@ -738,16 +663,11 @@ best_score = similarities[best_idx]
 ```
 Both `known_matrix` rows and `query` are L2-normalized, so this is equivalent to cosine similarity. Threshold: `0.50` (configurable). A score of `1.0` means identical faces; `0.0` means no similarity.
 
-### Camera overlay
-- Bounding boxes are drawn in green for known students, bright green with `(Marked)` label for students whose attendance has already been recorded, and blue for unknown faces.
-- A semi-transparent HUD bar at the top shows Room, Lecture #, and Present/Total count.
-- The matching percentage is intentionally not shown to avoid distracting the camera operator.
-
 ### Multi-device support
 Multiple devices can run the recognizer for the same classroom simultaneously. They all call `mark_attendance()` for the same `lecture_id`. Duplicate marks are absorbed by the `UNIQUE (student_id, lecture_id)` constraint in the `attendance` table — no data corruption.
 
 ### Why the process is separate
-The recognition loop is CPU-bound (model inference) and must not block FastAPI's async event loop. A separate OS process keeps them completely isolated. On Windows the process is launched with `CREATE_NO_WINDOW` so no terminal popup appears.
+The recognition loop is CPU-bound (model inference) and must not block FastAPI's async event loop. Using `asyncio.create_subprocess_exec()` keeps them completely isolated. The API server streams the subprocess's stdout to its own logger for debugging.
 
 ---
 
@@ -789,21 +709,26 @@ For the teacher's live dashboard. Returns the list of enrolled students split in
 ### Bug 1 — `UNIQUE (classroom_id, status)` constraint is broken
 **File:** `migrations/schema.py`, `lecture_sessions` table.  
 **Problem:** The constraint `UNIQUE (classroom_id, status) DEFERRABLE` means a classroom can have at most one row with `status = 'closed'`. After the first lecture ends, every subsequent lecture end will hit a unique violation.  
-**Fix:** Remove the UNIQUE constraint. The one-active-per-room guard is already done in application logic inside `start_lecture()` via the `SELECT ... WHERE status = 'active'` check.
+**Fix:** Remove the UNIQUE constraint. The one-active-per-room guard should be done in application logic inside `start_lecture()` (already done via the `SELECT ... WHERE status = 'active'` check), not via a DB constraint on status.
 
 ### Bug 2 — `start_lecture` force-fallback picks a random course
 **File:** `services/lecture_service.py`, line: `SELECT course_id FROM weekly_schedule WHERE classroom_id = $1 LIMIT 1`  
-**Problem:** No `ORDER BY`. When outside scheduled hours and `force=True`, this selects an arbitrary course.  
+**Problem:** No `ORDER BY`. When outside scheduled hours and `force=True`, this selects an arbitrary course — often the wrong one.  
 **Fix:** Order by time proximity: `ORDER BY ABS(EXTRACT(EPOCH FROM (start_time - CURRENT_TIME)))` to pick the nearest upcoming course.
 
-### ~~Bug 3 — No classroom device authentication~~ ✅ Fixed
-Classroom login via classroom ID + PIN is now implemented in `POST /lecture/classroom-login`. Classroom devices log in through `ui/classroom.html`. The upcoming lecture list is shown automatically after login.
+### Bug 3 — No classroom device authentication
+**Problem:** There is no `classroom_id` login endpoint. Classroom devices have no scoped identity token. The teacher dashboard has classrooms hardcoded as `CR-2113` and `CR-LAB` in an HTML dropdown.  
+**Fix needed:** `POST /classroom/login` with classroom_id + PIN → returns a classroom-scoped JWT. Classroom login page (`ui/classroom.html`) with smart upcoming lecture suggestions.
 
-### ~~Bug 4 — Schedule service only matches the exact current moment~~ ✅ Fixed
-`GET /lecture/upcoming/{classroom_id}` now returns the next N scheduled lectures with time-aware status (`ongoing`, `upcoming_today`, `upcoming`), so classroom devices always have context regardless of the exact clock time.
+### Bug 4 — Schedule service only matches the exact current moment
+**File:** `services/schedule_service.py`  
+**Problem:** `get_current_course()` returns a course only if the current time is strictly within a scheduled slot. A lecture started 2 minutes early or a device that boots after the scheduled start time finds nothing.  
+**Fix:** Add a `GET /lecture/upcoming/{classroom_id}?limit=3` endpoint returning the next N scheduled lectures (ordered by time), so the device can show contextual suggestions and let the user pick.
 
-### ~~Bug 5 — Stale session blocks the classroom UI~~ ✅ Fixed
-On Windows, `camera_active` was always `false` after a server restart (in-memory process registry is lost), causing the UI to incorrectly flag every active lecture as stale. The `/lecture/upcoming` response now includes `windows_mode: true` and the stale-session heuristic is skipped on Windows.
+### Bug 5 — In-memory recognition process registry lost on restart
+**File:** `core/recognition_manager.py`  
+**Problem:** `_processes: dict[str, asyncio.subprocess.Process]` is a module-level dict. If the FastAPI server crashes and restarts, this dict is empty — but the database still shows lectures as `active`. The recognizer auto-starts a new lecture via `AUTO_START`, potentially violating the active-lecture uniqueness guard.  
+**Fix:** On server startup, query for any orphaned `active` lectures (started before server boot) and either close them automatically or reconcile against running processes.
 
 ### Bug 6 — Frontend classroom options are hardcoded
 **File:** `ui/teacher.html`  
@@ -884,48 +809,22 @@ The following features are identified for the next development phase:
 FastAPI is fully async. asyncpg is the fastest async PostgreSQL driver for Python, using the binary wire protocol directly. SQLAlchemy's async layer adds overhead; psycopg2 is synchronous and would block the event loop.
 
 **Why PostgreSQL `$1, $2` placeholders?**  
-PostgreSQL uses positional placeholders, not `?` (that's SQLite). All queries use `$1, $2, ...` positional syntax for compatibility with asyncpg.
+PostgreSQL uses positional placeholders, not `?` (that's SQLite). Early versions of this project used `?` with asyncpg, which caused every query to throw `invalid syntax` errors. All queries now use `$1, $2, ...`.
 
 **Why store only the averaged embedding, not raw face images?**  
-Privacy. Raw images are biometric data subject to GDPR/PDPA regulations. Storing only the 512-dim float32 vector satisfies the functional requirement without retaining reversible biometric data.
+Privacy. Raw images are biometric data subject to GDPR/PDPA regulations. Storing only the 512-dim float32 vector satisfies the functional requirement (matching) without retaining reversible biometric data.
 
 **Why a 3-frame recognition buffer?**  
-A single-frame match can be a false positive from a passing face, reflection, or photo. Requiring 3 consecutive matching frames with the same identity reduces false positive marks to near zero in practice.
+A single-frame match can be a false positive from a passing face, a reflection, or a photo. Requiring 3 consecutive matching frames with the same identity reduces false positive marks to near zero in practice.
 
 **Why run the recognition engine as a subprocess, not an async task?**  
-InsightFace's model inference is CPU-bound and blocks Python's GIL. Running it as an `asyncio.Task` inside the FastAPI event loop would stall the entire API. A separate subprocess gives it its own Python interpreter and CPU core.
-
-**Why `CREATE_NO_WINDOW` on Windows instead of `CREATE_NEW_CONSOLE`?**  
-The earlier implementation used `CREATE_NEW_CONSOLE` which popped up a terminal window on every lecture start — disruptive for classroom devices. `CREATE_NO_WINDOW` runs the subprocess completely silently while still giving it full desktop context access (so OpenCV's `VideoCapture` and `imshow` work correctly).
-
-**Why detection resolution `320×320` instead of `640×640`?**  
-InsightFace's detection cost scales roughly with the square of the resolution. Going from 640 to 320 results in ~4× faster detection. At typical classroom distances (1–3m from camera), face bounding boxes are large enough that 320×320 detection loses no accuracy.
-
-**Why poll DB every 5 seconds for the active lecture instead of every frame?**  
-At 25fps the recognizer would issue 25 `SELECT` queries per second against the database — nearly all redundant since lectures change at human timescales (minutes). Decoupling the lecture poll to every 5 seconds eliminates 99.8% of these queries with zero impact on correctness.
+InsightFace's model inference is CPU-bound and blocks Python's GIL. Running it as an `asyncio.Task` inside the FastAPI event loop would stall the entire API. A separate subprocess (via `asyncio.create_subprocess_exec`) gives it its own Python interpreter and CPU core.
 
 **Why reload face DB every 60 seconds instead of on-demand?**  
-New students can be registered at any terminal during the registration window. A 60-second reload ensures all classroom engines pick up new registrations automatically without requiring a restart.
+New students can be registered at any terminal during the registration window (first 1–2 weeks of semester). A 60-second reload ensures all classroom recognition engines pick up new registrations automatically without requiring a restart. The reload is a single lightweight `SELECT student_id, name, face_encoding FROM students WHERE face_encoding IS NOT NULL`.
 
 **Why `BYTEA` for face embeddings?**  
-PostgreSQL's native binary type. `BYTEA` stores the raw float32 bytes efficiently and roundtrips cleanly through asyncpg without any encoding overhead.
+PostgreSQL's native binary type. The original schema used `BLOB` (SQLite-only). `BYTEA` stores the raw float32 bytes efficiently and roundtrips cleanly through asyncpg without any encoding overhead.
 
 **Why `ON CONFLICT DO NOTHING` in CSV imports?**  
-Bulk imports are expected to be run multiple times. Silently skipping duplicates keeps imports idempotent. The returned `inserted` / `skipped` counts tell the admin exactly what happened.
-
----
-
-## 18. Performance Summary
-
-The following table summarises the optimisations applied to the recognition engine:
-
-| Area | Before | After | Impact |
-|---|---|---|---|
-| Camera open | Default DirectShow settings | `MJPG` codec, `buffer=1`, explicit `CAP_DSHOW` | Eliminates stale-frame lag; faster first frame |
-| Model warm-up | None — stutter on frame 1 | Blank-frame inference at startup | Smooth first-frame processing |
-| Detection resolution | `640×640` | `320×320` | ~4× faster per-frame CPU inference |
-| Inference throttle | Every frame | Every 2nd frame | ~2× CPU reduction; display stays at 25fps |
-| DB lecture poll | Every frame (~25 queries/s) | Every 5 seconds | 99.8% fewer DB queries |
-| Preview resize | LANCZOS (high-quality, slow) | BILINEAR (fast, negligible visual diff) | 3–5× faster Tk frame render |
-| Frame sleep | Fixed `asyncio.sleep(0.04)` | `sleep(target - elapsed)` compensated | Eliminates accumulated timing drift |
-| Windows terminal | Pop-up console window appears | `CREATE_NO_WINDOW` — fully silent | No UI disruption for classroom operator |
+Bulk imports are expected to be run multiple times (e.g., admin re-exports and re-imports the same student list). Silently skipping duplicates means imports are idempotent. The returned `inserted` / `skipped` counts tell the admin what happened.

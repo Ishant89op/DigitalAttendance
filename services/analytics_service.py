@@ -8,7 +8,6 @@ Designed for low latency:
 """
 
 import logging
-from datetime import date
 
 from core.database import get_conn
 from config.settings import analytics as cfg
@@ -204,71 +203,39 @@ async def get_live_lecture_attendance(lecture_id: int) -> dict:
 async def get_teacher_course_stats(teacher_id: str) -> list[dict]:
     """Per-course attendance averages for all courses taught by this teacher."""
     async with get_conn() as conn:
-        courses = await conn.fetch(
+        rows = await conn.fetch(
             """
             SELECT
                 c.course_id,
                 c.course_name,
-                c.department,
-                c.semester
+                COUNT(DISTINCT ls.lecture_id)          AS total_lectures,
+                ROUND(AVG(lecture_pct.pct), 2)         AS avg_attendance_pct
             FROM   course_teachers ct
             JOIN   courses c ON c.course_id = ct.course_id
+            LEFT   JOIN lecture_sessions ls ON ls.course_id = c.course_id
+                                           AND ls.status    = 'closed'
+            LEFT   JOIN LATERAL (
+                SELECT
+                    ls2.lecture_id,
+                    COUNT(a.id)::NUMERIC
+                    / NULLIF(
+                        (SELECT COUNT(*) FROM students s2
+                         JOIN courses c2 ON c2.department = s2.department
+                                        AND c2.semester   = s2.semester
+                         WHERE c2.course_id = ls2.course_id), 0
+                    ) * 100 AS pct
+                FROM lecture_sessions ls2
+                LEFT JOIN attendance a ON a.lecture_id = ls2.lecture_id
+                WHERE ls2.lecture_id = ls.lecture_id
+                GROUP BY ls2.lecture_id, ls2.course_id
+            ) lecture_pct ON TRUE
             WHERE  ct.teacher_id = $1
+            GROUP  BY c.course_id, c.course_name
             ORDER  BY c.course_name
             """,
             teacher_id,
         )
-
-        results = []
-        for course in courses:
-            total_lectures = await conn.fetchval(
-                """
-                SELECT COUNT(*)
-                FROM   lecture_sessions
-                WHERE  course_id = $1
-                  AND  status = 'closed'
-                """,
-                course["course_id"],
-            )
-            enrolled = await conn.fetchval(
-                """
-                SELECT COUNT(*)
-                FROM   students
-                WHERE  department = $1
-                  AND  semester = $2
-                """,
-                course["department"],
-                course["semester"],
-            )
-            lecture_rows = await conn.fetch(
-                """
-                SELECT ls.lecture_id, COUNT(a.id) AS present_count
-                FROM   lecture_sessions ls
-                LEFT   JOIN attendance a ON a.lecture_id = ls.lecture_id
-                WHERE  ls.course_id = $1
-                  AND  ls.status = 'closed'
-                GROUP  BY ls.lecture_id
-                """,
-                course["course_id"],
-            )
-
-            if lecture_rows and enrolled:
-                percentages = [
-                    (row["present_count"] or 0) / enrolled * 100
-                    for row in lecture_rows
-                ]
-                avg_attendance_pct = round(sum(percentages) / len(percentages), 2)
-            else:
-                avg_attendance_pct = 0.0
-
-            results.append({
-                "course_id": course["course_id"],
-                "course_name": course["course_name"],
-                "total_lectures": int(total_lectures or 0),
-                "avg_attendance_pct": avg_attendance_pct,
-            })
-
-    return results
+    return [dict(r) for r in rows]
 
 
 # ─────────────────────────────────────────────
@@ -365,11 +332,14 @@ async def get_admin_dashboard() -> dict:
             cfg.low_attendance_threshold,
         )
 
+    by_department = [dict(r) for r in dept_stats]
+
     return {
         "totals": dict(totals),
         "daily_trend": [{"day": str(r["day"]), "count": r["count"]}
                         for r in daily_trend],
-        "department_stats": [dict(r) for r in dept_stats],
+        "by_department": by_department,
+        "department_stats": by_department,
         "low_attendance_students": [dict(r) for r in low_att],
         "thresholds": {
             "warning":  cfg.low_attendance_threshold,

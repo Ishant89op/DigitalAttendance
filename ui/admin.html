@@ -410,7 +410,7 @@ async function loadDashboard() {
         </tr>`).join('')
       : '<tr><td colspan="3"><div class="empty-state"><p>No at-risk students 🎉</p></div></td></tr>';
 
-    const dept = d.by_department || [];
+    const dept = d.by_department || d.department_stats || [];
     document.getElementById('dept-overview').innerHTML = dept.length
       ? dept.map(dpt => `
           <div class="progress-row">
@@ -548,7 +548,7 @@ async function loadClassrooms() {
           <td>${c.room_number}</td>
           <td>${c.building||'–'}</td>
           <td style="font-family:var(--mono)">${c.capacity||'–'}</td>
-          <td style="font-family:var(--mono)">${c.access_pin||'••••'}</td>
+          <td style="font-family:var(--mono)">${c.access_pin || '1234'}</td>
         </tr>`).join('')
       : '<tr><td colspan="5"><div class="empty-state"><p>No classrooms found</p></div></td></tr>';
   } catch(e) { toast('Failed to load classrooms', 'error'); }

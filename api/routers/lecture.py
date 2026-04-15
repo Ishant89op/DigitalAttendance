@@ -10,7 +10,10 @@ from services.lecture_service import (
 from services.schedule_service import get_upcoming_lectures
 from services.analytics_service import get_live_lecture_attendance
 from core.recognition_manager import (
-    start_recognition_process, stop_recognition_process, is_running,
+    build_manual_command,
+    is_running_async,
+    start_recognition_process,
+    stop_recognition_process,
 )
 from core.database import get_conn
 
@@ -38,29 +41,33 @@ async def classroom_login(req: ClassroomLoginRequest):
     if req.pin != stored_pin:
         raise HTTPException(status_code=401, detail="Incorrect PIN.")
 
-    upcoming   = await get_upcoming_lectures(req.classroom_id, limit=3)
-    active_id  = await get_active_lecture(req.classroom_id)
+    upcoming = await get_upcoming_lectures(req.classroom_id, limit=3)
+    active_id = await get_active_lecture(req.classroom_id)
+    camera_active = await is_running_async(req.classroom_id)
     return {
         "classroom_id":      row["classroom_id"],
         "room_number":       row["room_number"],
         "building":          row["building"],
         "capacity":          row["capacity"],
         "active_lecture_id": active_id,
-        "camera_active":     is_running(req.classroom_id),
+        "camera_active":     camera_active,
         "windows_mode":      IS_WINDOWS,
+        "manual_command":    build_manual_command(req.classroom_id),
         "upcoming_lectures": upcoming,
     }
 
 
 @router.get("/upcoming/{classroom_id}")
 async def upcoming(classroom_id: str, limit: int = 3):
-    lectures  = await get_upcoming_lectures(classroom_id, limit=limit)
+    lectures = await get_upcoming_lectures(classroom_id, limit=limit)
     active_id = await get_active_lecture(classroom_id)
+    camera_active = await is_running_async(classroom_id)
     return {
         "classroom_id":      classroom_id,
         "active_lecture_id": active_id,
-        "camera_active":     is_running(classroom_id),
+        "camera_active":     camera_active,
         "windows_mode":      IS_WINDOWS,
+        "manual_command":    build_manual_command(classroom_id),
         "upcoming":          lectures,
     }
 
@@ -90,29 +97,28 @@ async def start(req: LectureStartRequest):
             detail="No course assigned or lecture already active.",
         )
 
-    # Try to start the recognition subprocess.
-    # On Windows with --reload this often fails silently — the UI will
-    # tell the user to run the recognizer manually in a separate terminal.
-    cam_started = False
-    cam_note    = ""
-    if not IS_WINDOWS:
-        cam_started = await start_recognition_process(req.classroom_id)
-        cam_note = "Camera recognition active." if cam_started else "Recognition already running."
+    manual_command = build_manual_command(req.classroom_id)
+    cam_started = await start_recognition_process(req.classroom_id)
+    camera_active = await is_running_async(req.classroom_id)
+
+    if camera_active:
+        cam_note = "Camera recognition active."
+    elif IS_WINDOWS:
+        cam_note = (
+            "Lecture started, but camera could not be confirmed yet. "
+            "If no new camera window appears, run the manual command."
+        )
     else:
-        # On Windows: attempt it, but don't rely on it
-        try:
-            cam_started = await start_recognition_process(req.classroom_id)
-            cam_note = "Camera process launched in background." if cam_started else "Already running."
-        except Exception as e:
-            cam_note = f"Auto-start failed ({e}). Run manually: python main.py recognize --classroom {req.classroom_id}"
+        cam_note = "Lecture started, but recognition process could not be confirmed."
 
     return {
         "lecture_id":     lecture_id,
         "classroom_id":   req.classroom_id,
         "camera_started": cam_started,
+        "camera_active":  camera_active,
         "windows_mode":   IS_WINDOWS,
         "message":        cam_note,
-        "manual_command": f"python main.py recognize --classroom {req.classroom_id}" if (IS_WINDOWS and not cam_started) else None,
+        "manual_command": manual_command,
     }
 
 
@@ -151,10 +157,13 @@ async def force_close(classroom_id: str):
 @router.get("/active/{classroom_id}")
 async def active(classroom_id: str):
     lecture_id = await get_active_lecture(classroom_id)
+    camera_active = await is_running_async(classroom_id)
     return {
         "classroom_id":  classroom_id,
         "lecture_id":    lecture_id,
-        "camera_active": is_running(classroom_id),
+        "camera_active": camera_active,
+        "windows_mode":  IS_WINDOWS,
+        "manual_command": build_manual_command(classroom_id),
     }
 
 

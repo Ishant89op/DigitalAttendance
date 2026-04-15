@@ -59,7 +59,7 @@
           <div class="cam-bar" id="cam-status">
             <div class="cam-dot"></div>
             <div>
-              <div class="cam-label">Camera Active — Face Recognition Running</div>
+              <div class="cam-label" id="cam-label">Camera Active — Face Recognition Running</div>
               <div class="cam-sub" id="cam-detail">Recognition engine running</div>
             </div>
           </div>
@@ -137,6 +137,7 @@
 if (!requireAuth('teacher')) throw new Error('redirect');
 const user = getUser();
 let activeLectureId = null, pollInterval = null;
+let windowsMode = false, manualCommand = '';
 
 initSidebar('teacher', user.name, user.id, [
   { icon: '📡', label: 'Live Lecture', active: true,  onclick: "showSection('live',event)" },
@@ -190,6 +191,8 @@ async function checkActive() {
   try {
     const res = await api.get('/lecture/active/' + classroom);
     if (res.lecture_id) {
+      windowsMode = !!res.windows_mode;
+      manualCommand = res.manual_command || '';
       activeLectureId = res.lecture_id;
       onLectureStarted(res.lecture_id, res.camera_active);
     } else {
@@ -208,9 +211,15 @@ async function startLecture() {
     const res = await api.post('/lecture/start', {
       classroom_id: classroom, course_id, teacher_id: user.id, force: true
     });
+    windowsMode = !!res.windows_mode;
+    manualCommand = res.manual_command || '';
     activeLectureId = res.lecture_id;
-    onLectureStarted(res.lecture_id, res.camera_started);
-    toast('Attendance started — camera is live', 'success');
+    onLectureStarted(res.lecture_id, !!res.camera_active);
+    if (windowsMode && !res.camera_active) {
+      toast('Attendance started. If the camera window did not open, run the manual command shown in the classroom view.', 'warn');
+    } else {
+      toast('Attendance started — camera is live', 'success');
+    }
   } catch(e) {
     toast('Could not start: ' + e.message, 'error');
     btn.disabled = false;
@@ -239,9 +248,14 @@ function onLectureStarted(lectureId, cameraActive) {
     `<span class="badge good">Session #${lectureId}</span>`;
   const cam = document.getElementById('cam-status');
   cam.style.display = 'flex';
-  document.getElementById('cam-detail').textContent = cameraActive
-    ? 'Camera running · scanning every frame automatically'
-    : 'Camera starting up…';
+  document.getElementById('cam-label').textContent = (windowsMode && !cameraActive)
+    ? 'Session Active — Camera Runs In Separate Terminal'
+    : 'Camera Active — Face Recognition Running';
+  document.getElementById('cam-detail').textContent = (windowsMode && !cameraActive)
+    ? `Run manually if needed: ${manualCommand}`
+    : cameraActive
+      ? 'Camera running · scanning every frame automatically'
+      : 'Camera starting up…';
   if (!pollInterval) {
     pollLive();
     pollInterval = setInterval(pollLive, 4000);
@@ -257,7 +271,10 @@ function onLectureEnded() {
   document.getElementById('live-tables').style.display = 'none';
   document.getElementById('no-lecture-msg').style.display = '';
   document.getElementById('cam-status').style.display  = 'none';
+  document.getElementById('cam-label').textContent     = 'Camera Active — Face Recognition Running';
   document.getElementById('lecture-status-badge').innerHTML = '';
+  windowsMode = false;
+  manualCommand = '';
   if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
 }
 

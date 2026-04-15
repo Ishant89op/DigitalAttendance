@@ -11,6 +11,8 @@ Responsibilities:
 import logging
 from datetime import datetime, timezone
 
+from asyncpg import UniqueViolationError
+
 from core.database import transaction
 
 logger = logging.getLogger(__name__)
@@ -30,25 +32,22 @@ async def mark_attendance(
     """
     try:
         async with transaction() as conn:
-            result = await conn.execute(
+            await conn.execute(
                 """
                 INSERT INTO attendance (student_id, lecture_id, source, marked_by)
                 VALUES ($1, $2, $3, $4)
-                ON CONFLICT (student_id, lecture_id) DO NOTHING
                 """,
                 student_id, lecture_id, source, marked_by,
             )
 
-            if result.endswith("0"):
-                return False
-
+            # Audit trail
             await conn.execute(
                 """
                 INSERT INTO audit_log (event_type, actor_id, target_id, detail)
                 VALUES ('attendance_marked', $1, $2,
                         jsonb_build_object(
-                            'lecture_id', $3::TEXT,
-                            'source', $4,
+                            'lecture_id', $3::INT,
+                            'source', $4::TEXT,
                             'ts', $5::TEXT
                         ))
                 """,
@@ -59,9 +58,13 @@ async def mark_attendance(
                 datetime.now(timezone.utc).isoformat(),
             )
 
-        logger.info("Attendance marked  student=%s  lecture=%d  via=%s",
+        logger.info("✔ Attendance marked  student=%s  lecture=%d  via=%s",
                     student_id, lecture_id, source)
         return True
+
+    except UniqueViolationError:
+        # Already marked — not an error
+        return False
 
     except Exception as exc:
         logger.error("Failed to mark attendance for %s: %s", student_id, exc)
@@ -106,8 +109,8 @@ async def manual_override(
             INSERT INTO audit_log (event_type, actor_id, target_id, detail)
             VALUES ('manual_override', $1, $2,
                     jsonb_build_object(
-                        'lecture_id', $3::TEXT,
-                        'action', $4
+                        'lecture_id', $3::INT,
+                        'action', $4::TEXT
                     ))
             """,
             teacher_id, student_id, lecture_id, action,

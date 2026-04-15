@@ -1,47 +1,36 @@
-# Python bytecode and caches
+# Environment
+.env
+*.env
+
+# Python
 __pycache__/
 *.py[cod]
-*$py.class
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
 
 # Virtual environments
 venv/
 .venv/
 env/
-ENV/
 
-# Local environment files and secrets
-.env
-.env.*
-!.env.example
-
-# Build artifacts
-build/
-dist/
-*.egg-info/
-.eggs/
-pip-wheel-metadata/
-
-# Tooling caches
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.hypothesis/
-.coverage
-.coverage.*
-htmlcov/
-
-# Local databases and logs
-*.db
-*.sqlite3
-*.log
-
-# Temporary workspace folders
-.tmp/
-tmp/
-temp/
-
-# Editor and OS files
+# IDE
 .vscode/
 .idea/
+*.swp
+
+# Temporary files
+temp_*.csv
+*.db
+*.sqlite3
+
+# InsightFace model cache (large, re-downloadable)
+~/.insightface/
+
+# OS
 .DS_Store
 Thumbs.db

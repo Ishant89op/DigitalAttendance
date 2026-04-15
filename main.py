@@ -11,22 +11,27 @@ Usage:
 
 import asyncio
 import logging
-import os
 import sys
-from pathlib import Path
+import os
 
-try:
-    from dotenv import load_dotenv
-except ModuleNotFoundError as exc:
-    raise SystemExit(
-        "Missing project dependencies for this interpreter.\n"
-        "Activate the project virtual environment first:\n"
-        "  .\\venv\\Scripts\\Activate.ps1\n"
-        "Then run:\n"
-        "  python main.py register"
-    ) from exc
+# ── Load .env automatically so VS Code terminal env injection is not needed ──
+def _load_dotenv():
+    env_path = os.path.join(os.path.dirname(__file__), ".env")
+    if not os.path.exists(env_path):
+        return
+    with open(env_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key   = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:   # don't overwrite real env vars
+                os.environ[key] = value
 
-load_dotenv(dotenv_path=Path(__file__).resolve().with_name(".env"), override=False)
+_load_dotenv()
+# ─────────────────────────────────────────────────────────────────────────────
 
 logging.basicConfig(
     level=logging.INFO,
@@ -70,18 +75,31 @@ def cmd_recognize():
     )
     args, _ = parser.parse_known_args(sys.argv[2:])
 
-    # recognizer manages its own threads + async worker internally — call directly
     from recognition.recognizer import main
-    main(args.classroom)
+    asyncio.run(main(args.classroom))
 
 
 def cmd_server():
+    import argparse
     import uvicorn
+
+    parser = argparse.ArgumentParser(description="AttendX API Server")
+    parser.add_argument(
+        "--reload",
+        action="store_true",
+        help="Enable auto-reload (not recommended for Windows camera workflows).",
+    )
+    args, _ = parser.parse_known_args(sys.argv[2:])
+
+    reload_enabled = args.reload or os.getenv("ATTENDX_RELOAD", "").lower() in {
+        "1", "true", "yes",
+    }
+
     uvicorn.run(
         "api.server:app",
         host="0.0.0.0",
         port=8000,
-        reload=True,
+        reload=reload_enabled,
         log_level="info",
     )
 

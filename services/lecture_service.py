@@ -9,7 +9,7 @@ This is essential during testing and for ad-hoc lectures.
 import logging
 
 from core.database import get_conn, transaction
-from services.schedule_service import get_current_course
+from services.schedule_service import get_current_course, get_upcoming_lectures
 
 logger = logging.getLogger(__name__)
 
@@ -25,8 +25,8 @@ async def start_lecture(
 
     - If course_id is given → use it directly (no schedule lookup).
     - If course_id is None and force=False → auto-detect from weekly_schedule.
-    - If course_id is None and force=True → use first available course for
-      this classroom's department (useful for testing / ad-hoc sessions).
+    - If course_id is None and force=True → use the nearest scheduled course
+      for this classroom instead of picking an arbitrary row.
 
     Returns lecture_id on success, None if:
       - No course found and force=False
@@ -38,16 +38,9 @@ async def start_lecture(
         course_id = await get_current_course(classroom_id)
 
     if not course_id and force:
-        # Fallback: pick any course linked to this classroom via schedule
-        async with get_conn() as conn:
-            course_id = await conn.fetchval(
-                """
-                SELECT course_id FROM weekly_schedule
-                WHERE classroom_id = $1
-                LIMIT 1
-                """,
-                classroom_id,
-            )
+        upcoming = await get_upcoming_lectures(classroom_id, limit=1)
+        if upcoming:
+            course_id = upcoming[0]["course_id"]
 
     if not course_id:
         logger.info(

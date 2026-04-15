@@ -2,7 +2,8 @@
 CSV bulk import service — used by admin to seed the database.
 
 Accepts file paths (saved from UploadFile to a temp location).
-All imports are transactional: either all rows succeed or none do.
+Each row is handled independently inside one transaction. Valid rows are
+inserted, while invalid or duplicate rows are counted as skipped.
 """
 
 import csv
@@ -25,7 +26,7 @@ async def import_students(file_path: str) -> dict:
     async with transaction() as conn:
         for row in rows:
             try:
-                await conn.execute(
+                result = await conn.execute(
                     """
                     INSERT INTO students (student_id, name, email, department, semester)
                     VALUES ($1, $2, $3, $4, $5)
@@ -37,7 +38,10 @@ async def import_students(file_path: str) -> dict:
                     row["department"].strip(),
                     int(row["semester"]),
                 )
-                inserted += 1
+                if result.endswith("1"):
+                    inserted += 1
+                else:
+                    skipped += 1
             except Exception as e:
                 logger.warning("Skipped student row %s: %s", row, e)
                 skipped += 1
@@ -57,7 +61,7 @@ async def import_teachers(file_path: str) -> dict:
     async with transaction() as conn:
         for row in rows:
             try:
-                await conn.execute(
+                result = await conn.execute(
                     """
                     INSERT INTO teachers (teacher_id, name, email, department)
                     VALUES ($1, $2, $3, $4)
@@ -68,7 +72,10 @@ async def import_teachers(file_path: str) -> dict:
                     row.get("email", "").strip() or None,
                     row["department"].strip(),
                 )
-                inserted += 1
+                if result.endswith("1"):
+                    inserted += 1
+                else:
+                    skipped += 1
             except Exception as e:
                 logger.warning("Skipped teacher row %s: %s", row, e)
                 skipped += 1
@@ -87,7 +94,7 @@ async def import_courses(file_path: str) -> dict:
     async with transaction() as conn:
         for row in rows:
             try:
-                await conn.execute(
+                result = await conn.execute(
                     """
                     INSERT INTO courses (course_id, course_name, department, semester, credits)
                     VALUES ($1, $2, $3, $4, $5)
@@ -99,7 +106,10 @@ async def import_courses(file_path: str) -> dict:
                     int(row["semester"]),
                     int(row.get("credits", 3)),
                 )
-                inserted += 1
+                if result.endswith("1"):
+                    inserted += 1
+                else:
+                    skipped += 1
             except Exception as e:
                 logger.warning("Skipped course row %s: %s", row, e)
                 skipped += 1
@@ -121,7 +131,7 @@ async def import_schedule(file_path: str) -> dict:
     async with transaction() as conn:
         for row in rows:
             try:
-                await conn.execute(
+                result = await conn.execute(
                     """
                     INSERT INTO weekly_schedule
                         (course_id, classroom_id, day_of_week, start_time, end_time)
@@ -133,7 +143,10 @@ async def import_schedule(file_path: str) -> dict:
                     row["start_time"].strip(),
                     row["end_time"].strip(),
                 )
-                inserted += 1
+                if result.endswith("1"):
+                    inserted += 1
+                else:
+                    skipped += 1
             except Exception as e:
                 logger.warning("Skipped schedule row %s: %s", row, e)
                 skipped += 1
@@ -152,7 +165,7 @@ async def import_course_teachers(file_path: str) -> dict:
     async with transaction() as conn:
         for row in rows:
             try:
-                await conn.execute(
+                result = await conn.execute(
                     """
                     INSERT INTO course_teachers (course_id, teacher_id)
                     VALUES ($1, $2)
@@ -161,7 +174,10 @@ async def import_course_teachers(file_path: str) -> dict:
                     row["course_id"].strip(),
                     row["teacher_id"].strip(),
                 )
-                inserted += 1
+                if result.endswith("1"):
+                    inserted += 1
+                else:
+                    skipped += 1
             except Exception as e:
                 logger.warning("Skipped course_teacher row %s: %s", row, e)
                 skipped += 1
