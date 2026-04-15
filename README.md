@@ -563,6 +563,43 @@ ui/login.html
 ```
 No web server required — all pages call `http://localhost:8000` directly.
 
+### Selenium Testing (Complete Project UI)
+
+This repository now includes a full Selenium smoke suite for all frontend roles/pages:
+
+- Login (`ui/login.html`)
+- Student dashboard (`ui/student.html`)
+- Teacher dashboard + session control (`ui/teacher.html`)
+- Admin console + data tabs + audit (`ui/admin.html`)
+- Classroom view + upcoming lecture start (`ui/classroom.html`)
+
+The tests use mocked API responses in-browser so they can run reliably even when PostgreSQL/camera processes are not running.
+
+Prerequisites:
+- Chrome or Edge installed
+- Python dependencies installed from `requirements.txt`
+
+Run tests and generate HTML report:
+
+```bash
+python -m pytest tests/selenium -m selenium --junitxml=reports/selenium/junit.xml
+python tests/selenium/build_html_report.py --input reports/selenium/junit.xml --output reports/selenium/report.html
+```
+
+PowerShell convenience command (Windows):
+
+```powershell
+./run_selenium_tests.ps1
+```
+
+Useful options:
+- `./run_selenium_tests.ps1 -Browser edge`
+- `./run_selenium_tests.ps1 -Headed`
+- `./run_selenium_tests.ps1 -OpenReport`
+
+Generated report path:
+- `reports/selenium/report.html`
+
 ---
 
 ## 10. CSV Data Formats

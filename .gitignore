@@ -34,3 +34,6 @@ temp_*.csv
 # OS
 .DS_Store
 Thumbs.db
+
+# Selenium / pytest reports
+reports/
