@@ -1,6 +1,11 @@
 """Attendance endpoints."""
 
-from fastapi import APIRouter, HTTPException
+from datetime import datetime, timezone
+from pathlib import Path
+from uuid import uuid4
+
+from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from attendance.attendance_manager import mark_attendance, manual_override
@@ -13,6 +18,10 @@ from services.dispute_service import (
 )
 
 router = APIRouter(prefix="/attendance", tags=["Attendance"])
+
+EVIDENCE_DIR = Path(__file__).resolve().parents[2] / "uploads" / "disputes"
+EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
+MAX_EVIDENCE_BYTES = 5 * 1024 * 1024
 
 
 class MarkRequest(BaseModel):
@@ -83,6 +92,60 @@ async def list_attendance(lecture_id: int):
             lecture_id,
         )
     return [dict(r) for r in rows]
+
+
+@router.post("/disputes/evidence", summary="Upload dispute evidence PDF")
+async def upload_dispute_evidence(student_id: str, file: UploadFile = File(...)):
+    student_id = student_id.strip()
+    if not student_id:
+        raise HTTPException(status_code=400, detail="Student ID is required.")
+
+    async with get_conn() as conn:
+        exists = await conn.fetchval(
+            "SELECT 1 FROM students WHERE student_id = $1 LIMIT 1",
+            student_id,
+        )
+    if not exists:
+        raise HTTPException(status_code=404, detail="Student not found.")
+
+    original_name = (file.filename or "").strip()
+    if not original_name.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are allowed.")
+
+    content = await file.read(MAX_EVIDENCE_BYTES + 1)
+    await file.close()
+
+    if not content:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+    if len(content) > MAX_EVIDENCE_BYTES:
+        raise HTTPException(status_code=400, detail="PDF exceeds 5 MB size limit.")
+    if not content.startswith(b"%PDF"):
+        raise HTTPException(status_code=400, detail="Uploaded file is not a valid PDF.")
+
+    file_name = f"{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}_{uuid4().hex}.pdf"
+    target = EVIDENCE_DIR / file_name
+    target.write_bytes(content)
+
+    return {
+        "student_id": student_id,
+        "original_name": original_name,
+        "file_name": file_name,
+        "size_bytes": len(content),
+        "evidence_url": f"/attendance/disputes/evidence/{file_name}",
+    }
+
+
+@router.get("/disputes/evidence/{file_name}", summary="Download dispute evidence PDF")
+async def get_dispute_evidence(file_name: str):
+    safe_name = Path(file_name).name
+    if safe_name != file_name or not safe_name.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Invalid evidence file name.")
+
+    target = EVIDENCE_DIR / safe_name
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="Evidence file not found.")
+
+    return FileResponse(target, media_type="application/pdf", filename=safe_name)
 
 
 @router.post("/disputes", summary="Create attendance dispute")

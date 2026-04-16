@@ -93,7 +93,9 @@
             <div class="form-group" style="margin:0"><label>Course ID</label><input id="dispute-course" placeholder="e.g. CS204"></div>
             <div class="form-group" style="margin:0"><label>Lecture ID (optional)</label><input id="dispute-lecture" type="number" placeholder="e.g. 42"></div>
             <div class="form-group" style="margin:0;grid-column:1/-1"><label>Reason</label><input id="dispute-reason" placeholder="I was present but not marked"></div>
-            <div class="form-group" style="margin:0;grid-column:1/-1"><label>Evidence (optional)</label><input id="dispute-evidence" placeholder="Any note or context"></div>
+            <div class="form-group" style="margin:0;grid-column:1/-1"><label>Evidence Notes (optional)</label><input id="dispute-evidence" placeholder="Any note or context"></div>
+            <div class="form-group" style="margin:0;grid-column:1/-1"><label>Medical Leave PDF (optional)</label><input id="dispute-medical-pdf" type="file" accept=".pdf,application/pdf"></div>
+            <div style="grid-column:1/-1;font-size:11px;color:var(--muted)">Upload only PDF files (max 5 MB) for medical leave support.</div>
           </div>
           <button class="btn btn-primary" style="margin-top:12px" onclick="raiseDispute()">Submit Dispute</button>
         </div>
@@ -106,9 +108,9 @@
         </div>
         <div style="overflow-x:auto">
           <table class="data-table">
-            <thead><tr><th>ID</th><th>Course</th><th>Lecture</th><th>Reason</th><th>Status</th><th>Reviewed</th></tr></thead>
+            <thead><tr><th>ID</th><th>Course</th><th>Lecture</th><th>Reason</th><th>Evidence</th><th>Status</th><th>Reviewed</th></tr></thead>
             <tbody id="disputes-body">
-              <tr><td colspan="6"><div class="empty-state"><p>Loading…</p></div></td></tr>
+              <tr><td colspan="7"><div class="empty-state"><p>Loading…</p></div></td></tr>
             </tbody>
           </table>
         </div>
@@ -341,14 +343,34 @@ async function raiseDispute() {
   const lectureRaw = document.getElementById('dispute-lecture').value.trim();
   const lectureId = lectureRaw ? parseInt(lectureRaw, 10) : null;
   const reason = document.getElementById('dispute-reason').value.trim();
-  const evidence = document.getElementById('dispute-evidence').value.trim() || null;
+  const evidenceNote = document.getElementById('dispute-evidence').value.trim();
+  const pdfInput = document.getElementById('dispute-medical-pdf');
+  const pdfFile = pdfInput.files && pdfInput.files[0] ? pdfInput.files[0] : null;
 
   if (!reason) {
     toast('Please provide a reason', 'warn');
     return;
   }
 
+  if (pdfFile && !pdfFile.name.toLowerCase().endsWith('.pdf')) {
+    toast('Only PDF files are allowed for medical leave evidence', 'warn');
+    return;
+  }
+
   try {
+    let evidence = evidenceNote || null;
+
+    if (pdfFile) {
+      const formData = new FormData();
+      formData.append('file', pdfFile);
+      const uploaded = await api.upload(
+        '/attendance/disputes/evidence?student_id=' + encodeURIComponent(user.id),
+        formData
+      );
+      const evidenceRef = `Medical leave PDF: ${uploaded.evidence_url}`;
+      evidence = evidence ? `${evidence}\n${evidenceRef}` : evidenceRef;
+    }
+
     await api.post('/attendance/disputes', {
       student_id: user.id,
       course_id: courseId,
@@ -360,10 +382,24 @@ async function raiseDispute() {
     ['dispute-lecture', 'dispute-reason', 'dispute-evidence'].forEach(id => {
       document.getElementById(id).value = '';
     });
+    document.getElementById('dispute-medical-pdf').value = '';
     await loadDisputes();
   } catch (e) {
     toast('Failed to submit dispute: ' + e.message, 'error');
   }
+}
+
+function renderDisputeEvidence(evidence) {
+  if (!evidence) return '-';
+  const match = evidence.match(/\/attendance\/disputes\/evidence\/[^\s]+\.pdf/i);
+  if (!match) return evidence;
+  const evidencePath = match[0];
+  const note = evidence
+    .replace(evidencePath, '')
+    .replace(/Medical leave PDF:\s*/i, '')
+    .trim();
+  const noteHtml = note ? `<div style="font-size:11px;color:var(--muted);margin-top:3px">${note.replace(/\n/g, '<br>')}</div>` : '';
+  return `<a href="${API}${evidencePath}" target="_blank" rel="noopener">View PDF</a>${noteHtml}`;
 }
 
 async function loadDisputes() {
@@ -375,12 +411,13 @@ async function loadDisputes() {
           <td>${r.course_name || r.course_id || '-'}</td>
           <td style="font-family:var(--mono)">${r.lecture_id || '-'}</td>
           <td style="max-width:260px">${r.reason || '-'}</td>
+          <td style="max-width:220px">${renderDisputeEvidence(r.evidence)}</td>
           <td><span class="badge ${r.status === 'approved' ? 'good' : r.status === 'rejected' ? 'danger' : 'info'}">${r.status}</span></td>
           <td style="font-size:11px;color:var(--muted)">${r.reviewed_at ? (formatDate(r.reviewed_at) + ' ' + formatTime(r.reviewed_at)) : '-'}</td>
         </tr>`).join('')
-      : '<tr><td colspan="6"><div class="empty-state"><p>No disputes raised yet</p></div></td></tr>';
+      : '<tr><td colspan="7"><div class="empty-state"><p>No disputes raised yet</p></div></td></tr>';
   } catch (e) {
-    document.getElementById('disputes-body').innerHTML = '<tr><td colspan="6"><div class="empty-state"><p>Unable to load disputes</p></div></td></tr>';
+    document.getElementById('disputes-body').innerHTML = '<tr><td colspan="7"><div class="empty-state"><p>Unable to load disputes</p></div></td></tr>';
   }
 }
 

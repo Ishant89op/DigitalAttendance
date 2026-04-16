@@ -365,12 +365,13 @@
                 <th>Student</th>
                 <th>Lecture</th>
                 <th>Reason</th>
+                <th>Evidence</th>
                 <th>Status</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody id="disputes-queue-body">
-              <tr><td colspan="6"><div class="empty-state"><p>Select a course first</p></div></td></tr>
+              <tr><td colspan="7"><div class="empty-state"><p>Select a course first</p></div></td></tr>
             </tbody>
           </table>
         </div>
@@ -1018,17 +1019,30 @@ function downloadReport(format) {
   link.remove();
 }
 
+function renderDisputeEvidence(evidence) {
+  if (!evidence) return '-';
+  const match = evidence.match(/\/attendance\/disputes\/evidence\/[^\s]+\.pdf/i);
+  if (!match) return evidence;
+  const evidencePath = match[0];
+  const note = evidence
+    .replace(evidencePath, '')
+    .replace(/Medical leave PDF:\s*/i, '')
+    .trim();
+  const noteHtml = note ? `<div style="font-size:11px;color:var(--muted);margin-top:3px">${note.replace(/\n/g, '<br>')}</div>` : '';
+  return `<a href="${API}${evidencePath}" target="_blank" rel="noopener">View PDF</a>${noteHtml}`;
+}
+
 async function loadDisputeQueue() {
   const body = document.getElementById('disputes-queue-body');
   if (!selectedCourseId) {
-    body.innerHTML = '<tr><td colspan="6"><div class="empty-state"><p>Select a course first</p></div></td></tr>';
+    body.innerHTML = '<tr><td colspan="7"><div class="empty-state"><p>Select a course first</p></div></td></tr>';
     return;
   }
 
   try {
     const rows = await api.get('/attendance/disputes?course_id=' + encodeURIComponent(selectedCourseId) + '&limit=100');
     if (!rows.length) {
-      body.innerHTML = '<tr><td colspan="6"><div class="empty-state"><p>No disputes for this course</p></div></td></tr>';
+      body.innerHTML = '<tr><td colspan="7"><div class="empty-state"><p>No disputes for this course</p></div></td></tr>';
       return;
     }
 
@@ -1038,6 +1052,7 @@ async function loadDisputeQueue() {
         <td>${r.student_name || r.student_id}</td>
         <td style="font-family:var(--mono)">${r.lecture_id || '-'}</td>
         <td style="max-width:220px">${r.reason || '-'}</td>
+        <td style="max-width:220px">${renderDisputeEvidence(r.evidence)}</td>
         <td><span class="badge ${r.status === 'approved' ? 'good' : r.status === 'rejected' ? 'danger' : 'info'}">${r.status}</span></td>
         <td>
           ${r.status === 'open'
@@ -1048,7 +1063,7 @@ async function loadDisputeQueue() {
       </tr>
     `).join('');
   } catch (error) {
-    body.innerHTML = '<tr><td colspan="6"><div class="empty-state"><p>Failed to load disputes</p></div></td></tr>';
+    body.innerHTML = '<tr><td colspan="7"><div class="empty-state"><p>Failed to load disputes</p></div></td></tr>';
   }
 }
 
