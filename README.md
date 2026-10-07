@@ -1,212 +1,144 @@
-# AttendX - Smart Digital Attendance System
+# AttendX
 
-AttendX is a face-recognition attendance platform for colleges and classrooms.
-It includes role-based dashboards for Admin, Teacher, Student, and Classroom Device users.
+**Face-recognition attendance that marks itself — with security built in, not bolted on.**
 
-## Overview
+Students walk into class and look at the camera. AttendX recognises enrolled students in real time
+(InsightFace, 512‑D embeddings, liveness checks), marks them present, and gives every role a focused
+dashboard: students see whether they can afford to skip a lecture, faculty run sessions and fix
+mistakes, admins manage the institution — and every action lands in an append-only audit log.
 
-AttendX handles the full attendance lifecycle:
+![stack](https://img.shields.io/badge/FastAPI-PostgreSQL-4f46e5) ![tests](https://img.shields.io/badge/security%20tests-43%20passing-15803d) ![python](https://img.shields.io/badge/python-3.11+-0369a1)
 
-- lecture/session start and end
-- face-based automatic attendance marking
-- teacher manual attendance override
-- student attendance history and disputes
-- admin analytics, reminders, and exports
+---
 
-## Core Features
+## What it does
 
-### Admin
+| Role | Highlights |
+|---|---|
+| **Student** | Overall & per-subject attendance, **skip budget** ("you can miss 2 more" / "attend the next 3 to reach 75 %"), trend-based risk forecast, full present/absent history, disputes with PDF evidence |
+| **Faculty** | Course dashboards, live session console (present / not-yet-seen, one-click corrections), bulk corrections for past lectures, dispute queue, Excel/PDF exports with date ranges |
+| **Admin** | Institution overview + **security posture panel**, people management with one-time passwords, classrooms / device PINs / schedule / assignments, CSV import with per-row validation, risk forecast & weekly defaulter reminders, filtered exports, audit log |
+| **Classroom device** | Kiosk view: upcoming lectures, one-tap start, live ring of present/enrolled, "just marked" feed |
 
-- Manage students, teachers, courses, and classroom metadata
-- View system-wide analytics and low-attendance alerts
-- Generate and manage defaulter reminders
-- Export filtered attendance data (Excel/PDF)
-- Reset user passwords
+### Recognition pipeline
 
-### Teacher
+1. **Detect & embed** — InsightFace `buffalo_l` produces a 512‑D embedding per face.
+2. **Match** — cosine similarity against *only the students enrolled in the running course*, with a strict
+   threshold **and** a winner-vs-runner-up margin, so look-alikes are not confused.
+3. **Liveness** — motion, scale and landmark-geometry change plus **blink detection (EAR)** before a
+   student can be marked; photos and phone screens fail.
+4. **Confirm** — 3 consecutive confident frames, then a cooldown; duplicates are idempotent in SQL.
+5. **Register safely** — 20-sample capture, consistency check, and **duplicate-face blocking** (one person
+   cannot enrol under two IDs to give proxy attendance).
 
-- View course records and student-wise percentages
-- Run live session control (start/end attendance)
-- Use Manual Attendance section for past lectures
-- Resolve student disputes for assigned courses
-- Export attendance reports
+---
 
-### Student
+## Security
 
-- View subject-wise and overall attendance
-- View lecture-wise history (present/absent)
-- Raise attendance disputes with course/lecture details
-- View risk forecast and dispute outcomes
+This version is a hardening of the original project, where login only echoed a role back and every
+endpoint trusted the `student_id` / `teacher_id` sent by the browser. The full threat model is in
+[SECURITY.md](SECURITY.md). In short:
 
-### Classroom Device
+- **Server-side sessions** — 256-bit random token in an `HttpOnly; SameSite=Strict` cookie; only its
+  SHA‑256 digest is stored. Idle (30 min) + absolute (12 h) expiry, revocation on logout/password change,
+  max 5 concurrent sessions per account.
+- **CSRF** — every state-changing request needs `X-CSRF-Token`, an HMAC of the session token.
+- **Authorization on every route** — role checks plus ownership checks (own record, own course, own
+  classroom). A teacher cannot see or edit another teacher's lecture; a classroom device can only operate
+  its own room; students only ever see themselves. Identity always comes from the session, never the body.
+- **Passwords** — scrypt (N=2¹⁵, r=8, 32 MiB per guess), per-hash salt, constant-time verify,
+  transparent upgrade of legacy unsalted SHA‑256, strength policy, no default passwords anywhere.
+  Accounts start with **no password**; admins issue 72-hour one-time passwords that must be changed.
+- **Brute-force protection** — per-account lockout with exponential back-off, per-IP rate limits,
+  identical errors and timing for "no such user" vs "wrong password".
+- **Biometric privacy** — face templates encrypted at rest with **AES‑256‑GCM**, bound to the student ID
+  as associated data (a template copied onto another student fails to decrypt). Admins can erase a template.
+- **Uploads** — evidence PDFs are size-capped, checked for JavaScript / launch actions / embedded files
+  (including inside compressed object streams and hex-escaped names), stored outside the web root under
+  random names, served only to the owner, the course's teacher or an admin, with a `sandbox` CSP.
+- **Browser hardening** — strict CSP (`script-src 'self'`, no inline script or style), `X-Frame-Options: DENY`,
+  `nosniff`, `no-referrer`, COOP/CORP, Permissions-Policy, `no-store` on API responses, Host allow-list
+  (DNS-rebinding defence). All rendered data goes through an escape-by-default template helper.
+- **Data integrity** — attendance can only be written for students enrolled in that lecture's course;
+  dispute approval and its attendance change happen in one transaction; spreadsheet-formula injection is
+  neutralised in exports; generic error messages (no stack traces or SQL in responses).
 
-- Login with classroom credentials
-- Start lecture attendance from scheduled or selected course
-- Run recognition pipeline for live marking
+`tests/test_security.py` turns each of these into an attack that must fail — **43 tests, all passing**.
 
-## Tech Stack
+---
 
-- Backend: FastAPI, asyncpg, PostgreSQL
-- Recognition: InsightFace + OpenCV + NumPy
-- Frontend: Static HTML/CSS/JS dashboards
-- Testing: pytest, Selenium, pytest-html
+## Quick start
 
-## Project Layout
-
-```text
-DigitalAttendance/
-|-- main.py
-|-- requirements.txt
-|-- seed.sql
-|-- api/
-|-- attendance/
-|-- config/
-|-- core/
-|-- migrations/
-|-- recognition/
-|-- registration/
-|-- services/
-|-- ui/
-|-- tests/
-`-- run_selenium_tests.ps1
-```
-
-## Quick Start
-
-### 1. Prerequisites
-
-- Python 3.11+
-- PostgreSQL 14+
-- Webcam (for registration/recognition)
-
-### 2. Install Dependencies
-
-Windows PowerShell:
+**Requirements:** Python 3.11+, PostgreSQL 13+, a webcam for recognition.
 
 ```powershell
-python -m venv .venv311
-.\.venv311\Scripts\Activate.ps1
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+copy .env.example .env          # set DB_* (and optionally ADMIN_LOGIN_PASSWORD)
+
+python main.py db               # create schema, bootstrap the admin account
+psql -U postgres -d attendance_system -f seed.sql      # optional sample institution
+python scripts/demo_history.py --weeks 5               # optional: realistic past attendance for demos
+python main.py server           # → http://localhost:8000
 ```
 
-### 3. Configure Environment
+**First sign-in:** choose *Admin*, ID `admin`, and the one-time password from
+`instance/initial_admin_password.txt` (or your `ADMIN_LOGIN_PASSWORD`). You'll be asked to set a new one.
+Then, in **People**, issue one-time passwords to faculty/students, and in **Academics** set a device PIN
+for each classroom.
 
-Create `.env` in project root:
+**Register a face** (on the camera PC): `python main.py register`
+**Run recognition manually:** `python main.py recognize --classroom CR-2113` (normally started for you when a
+teacher or the classroom device presses *Start attendance*).
 
-```env
-DB_HOST=localhost
-DB_PORT=5432
-DB_NAME=attendance_system
-DB_USER=postgres
-DB_PASSWORD=your_password
+### CLI
 
-# Optional admin override
-ADMIN_LOGIN_ID=admin
-ADMIN_LOGIN_PASSWORD=admin123
-```
+| Command | Purpose |
+|---|---|
+| `python main.py server` | API + web UI |
+| `python main.py db` | Migrations (idempotent; also run at server start) |
+| `python main.py register` | Face registration terminal |
+| `python main.py recognize --classroom ID` | Recognition engine for one room |
+| `python main.py set-password --role admin --id admin` | Local account recovery (prompts securely) |
+| `python main.py encrypt-faces` | Encrypt any legacy plaintext face templates |
 
-### 4. Initialize Database
+### Tests
 
 ```powershell
-python main.py db
+$env:DB_PASSWORD="..."      # any Postgres you can CREATE DATABASE on
+python -m pytest -q          # creates and drops a throwaway attendx_test_* database
 ```
 
-Optional demo data:
+---
 
-```powershell
-psql -U postgres -d attendance_system -f seed.sql
+## Architecture
+
+```
+ui/  (vanilla JS, served same-origin)          recognition/  camera loop, liveness, matching
+  core.js  safe templating, API client, shell   registration/ 20-sample capture, duplicate check
+  login · student · teacher · admin · classroom
+        │  HttpOnly session cookie + X-CSRF-Token
+        ▼
+api/server.py   TrustedHost → security headers → body cap → rate limit
+api/routers/    auth · lecture · attendance · analytics · admin
+core/           auth.py (sessions, RBAC, ownership) · security.py (scrypt, AES-GCM, CSRF)
+services/       analytics (SQL aggregations) · disputes · CSV import · exports · schedule
+migrations/     idempotent schema + one-time security upgrades
+        ▼
+PostgreSQL      sessions · credentials · attendance (UNIQUE per student+lecture) · audit_log
 ```
 
-### 5. Run API Server
+All aggregation happens in PostgreSQL with indexes on attendance `(student_id)`, `(lecture_id)`,
+`(timestamp)`, lectures `(course_id, status)` and `(classroom_id, status)`.
 
-```powershell
-python main.py server
-```
+### Upgrading from v2
 
-API base URL: `http://localhost:8000`
+Run the server once (or `python main.py db`). The migration automatically:
+disables the old guessable defaults (password = own ID, `admin/admin123`, PIN `1234`), hashes strong
+legacy PINs and drops the plaintext column, encrypts plaintext face templates, and creates an admin
+account if none is usable. Then issue one-time passwords to users from **People**.
 
-### 6. Open UI
+---
 
-Open `ui/login.html` in browser.
-
-## Login Defaults
-
-- Student: `student_id` / same as `student_id`
-- Teacher: `teacher_id` / same as `teacher_id`
-- Admin: `admin` / `admin123`
-- Classroom: `classroom_id` / room PIN (default `1234`)
-
-## Common Commands
-
-```powershell
-# Run migrations
-python main.py db
-
-# Start registration terminal
-python main.py register
-
-# Start recognition for default classroom
-python main.py recognize
-
-# Start recognition for specific classroom
-python main.py recognize --classroom CR-2113
-
-# Start API server
-python main.py server
-```
-
-## Main API Route Groups
-
-- `/auth` - login, change password, reset password
-- `/lecture` - classroom login, start/end, live lecture status
-- `/attendance` - mark/override/list, disputes
-- `/analytics` - student/teacher/admin analytics, forecasts, exports
-- `/admin` - classroom and master data operations
-
-## Teacher Manual Attendance Workflow
-
-1. Open Teacher dashboard
-2. Go to Manual Attendance (left sidebar)
-3. Pick course and previous lecture
-4. Select absentees or all students
-5. Mark selected as present/absent and apply
-
-## Testing
-
-### API and Unit Tests
-
-```powershell
-.\.venv311\Scripts\python.exe -m pytest -q
-```
-
-### Selenium + HTML Report
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\run_selenium_tests.ps1
-```
-
-Generated report: `reports/selenium/report.html`
-
-## Troubleshooting
-
-### Port 8000 already in use
-
-If server start fails with address already in use:
-
-```powershell
-$pid = (Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1).OwningProcess
-if ($pid) { Stop-Process -Id $pid -Force }
-python main.py server
-```
-
-### Recognition does not start on Windows
-
-- Ensure camera permission is enabled
-- Ensure dependencies are installed in `.venv311`
-- Check `recognition_last_error.log`
-
-## Notes
-
-- Migrations run at API startup as well, but `python main.py db` is the recommended explicit setup step.
-- Attendance write operations are idempotent for the same student+lecture.
-- Dispute approval can update attendance records and audit logs.
+Built at IIIT Vadodara · contributors: [@KavyaSharma1806](https://github.com/KavyaSharma1806), [@ShreyashChaurasia](https://github.com/ShreyashChaurasia), [@Ishant89op](https://github.com/Ishant89op)
