@@ -3,388 +3,97 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AttendX — Login</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<style>
-  :root {
-    --bg:       #f5f6fa;
-    --surface:  #ffffff;
-    --border:   #e2e5ef;
-    --border2:  #d0d4e4;
-    --blue:     #3b6ef5;
-    --blue-dim: #3b6ef514;
-    --text:     #1a1d27;
-    --text2:    #4b5068;
-    --muted:    #8b90a8;
-    --red:      #dc2626;
-    --green:    #16a34a;
-    --sans:     'Inter', sans-serif;
-    --mono:     'JetBrains Mono', monospace;
-  }
-
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-  body {
-    background: var(--bg);
-    color: var(--text);
-    font-family: var(--sans);
-    min-height: 100vh;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 20px;
-  }
-
-  .wrap {
-    width: 100%;
-    max-width: 400px;
-    animation: up 0.4s ease both;
-  }
-
-  @keyframes up {
-    from { opacity: 0; transform: translateY(16px); }
-    to   { opacity: 1; transform: translateY(0); }
-  }
-
-  .brand {
-    text-align: center;
-    margin-bottom: 28px;
-  }
-
-  .brand-icon {
-    width: 48px; height: 48px;
-    background: var(--blue);
-    border-radius: 12px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 22px;
-    margin-bottom: 12px;
-    box-shadow: 0 4px 16px rgba(59,110,245,0.25);
-  }
-
-  .brand h1 {
-    font-size: 24px;
-    font-weight: 600;
-    color: var(--text);
-    letter-spacing: -0.5px;
-  }
-
-  .brand h1 span { color: var(--blue); }
-
-  .brand p {
-    font-size: 12px;
-    color: var(--muted);
-    margin-top: 4px;
-  }
-
-  .card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 14px;
-    padding: 28px 28px 24px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.06), 0 8px 32px rgba(0,0,0,0.04);
-  }
-
-  /* role tabs */
-  .tabs {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 4px;
-    background: var(--bg);
-    padding: 4px;
-    border-radius: 9px;
-    margin-bottom: 22px;
-  }
-
-  .tab {
-    padding: 7px 4px;
-    border: none;
-    background: transparent;
-    color: var(--muted);
-    font-family: var(--sans);
-    font-size: 11px;
-    font-weight: 600;
-    border-radius: 6px;
-    cursor: pointer;
-    transition: all 0.15s;
-    letter-spacing: 0.2px;
-  }
-
-  .tab.active {
-    background: var(--surface);
-    color: var(--blue);
-    box-shadow: 0 1px 4px rgba(0,0,0,0.1);
-  }
-
-  /* fields */
-  .field { margin-bottom: 14px; }
-
-  .field label {
-    display: block;
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    color: var(--muted);
-    margin-bottom: 6px;
-  }
-
-  .field input {
-    width: 100%;
-    background: var(--surface);
-    border: 1px solid var(--border2);
-    border-radius: 8px;
-    padding: 10px 13px;
-    color: var(--text);
-    font-family: var(--sans);
-    font-size: 14px;
-    outline: none;
-    transition: border-color 0.15s, box-shadow 0.15s;
-  }
-
-  .field input:focus {
-    border-color: var(--blue);
-    box-shadow: 0 0 0 3px var(--blue-dim);
-  }
-
-  .field input::placeholder { color: var(--muted); }
-
-  .btn-login {
-    width: 100%;
-    padding: 11px;
-    background: var(--blue);
-    color: #fff;
-    border: none;
-    border-radius: 8px;
-    font-family: var(--sans);
-    font-size: 14px;
-    font-weight: 600;
-    cursor: pointer;
-    margin-top: 4px;
-    transition: all 0.15s;
-    position: relative;
-    overflow: hidden;
-  }
-
-  .btn-login:hover {
-    background: #2d5de0;
-    transform: translateY(-1px);
-    box-shadow: 0 4px 14px rgba(59,110,245,0.35);
-  }
-
-  .btn-login:active { transform: none; }
-
-  .btn-login:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
-
-  .error {
-    background: #fef2f2;
-    border: 1px solid #fecaca;
-    color: var(--red);
-    border-radius: 8px;
-    padding: 10px 13px;
-    font-size: 12px;
-    margin-top: 12px;
-    display: none;
-  }
-
-  .error.show { display: block; }
-
-  .hint {
-    font-size: 11px;
-    color: var(--muted);
-    margin-top: 6px;
-    padding: 0 2px;
-  }
-
-  .footer {
-    text-align: center;
-    margin-top: 20px;
-    font-size: 11px;
-    color: var(--muted);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-  }
-
-  .dot {
-    width: 7px; height: 7px;
-    background: var(--green);
-    border-radius: 50%;
-    animation: blink 2s infinite;
-    flex-shrink: 0;
-  }
-
-  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
-</style>
+<meta name="referrer" content="no-referrer">
+<title>Sign in · AttendX</title>
+<link rel="icon" href="img/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="css/app.css">
 </head>
 <body>
+<div class="auth">
+  <section class="auth-art" aria-hidden="true">
+    <div class="brand" id="brand"></div>
+    <div class="auth-hero">
+      <div class="scan">
+        <svg viewBox="0 0 220 220" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round">
+          <path d="M30 62V42a12 12 0 0 1 12-12h20M158 30h20a12 12 0 0 1 12 12v20M190 158v20a12 12 0 0 1-12 12h-20M62 190H42a12 12 0 0 1-12-12v-20" stroke-width="3"/>
+          <ellipse cx="110" cy="104" rx="44" ry="56" opacity=".35"/>
+          <path d="M84 92h12M124 92h12M100 132c6 5 14 5 20 0M110 98v20" opacity=".55"/>
+          <g class="node" fill="currentColor" stroke="none">
+            <circle cx="90" cy="92" r="2.6"/><circle cx="130" cy="92" r="2.6"/><circle cx="110" cy="118" r="2.6"/>
+            <circle cx="100" cy="133" r="2.2"/><circle cx="120" cy="133" r="2.2"/><circle cx="78" cy="108" r="1.8"/>
+            <circle cx="142" cy="108" r="1.8"/><circle cx="110" cy="62" r="1.8"/><circle cx="110" cy="158" r="1.8"/>
+          </g>
+          <path d="M90 92 110 118 130 92M78 108l12-16M142 108l-12-16M100 133l10-15 10 15M110 62v30" opacity=".25"/>
+        </svg>
+        <div class="beam"></div>
+      </div>
+      <div>
+        <h1>Attendance that <em>marks itself.</em></h1>
+        <p>Walk into class, look up, done. AttendX recognises enrolled students in real time and keeps every record auditable.</p>
+      </div>
+      <div class="features">
+        <div class="feature"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/><path d="M9 15c1.5 1.5 4.5 1.5 6 0"/></svg><div><b>Liveness-checked recognition</b><span>Blink and motion checks stop photo and screen spoofing.</span></div></div>
+        <div class="feature"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg><div><b>Encrypted biometrics</b><span>Face templates are AES-256-GCM encrypted and bound to each student.</span></div></div>
+        <div class="feature"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg><div><b>Least-privilege access</b><span>Everyone sees only their own records — enforced by the server.</span></div></div>
+      </div>
+    </div>
+    <div class="auth-foot">IIIT Vadodara · Smart Attendance</div>
+  </section>
 
-<div class="wrap">
-  <div class="brand">
-    <div class="brand-icon">👁</div>
-    <h1>Attend<span>X</span></h1>
-    <p>Smart Face Attendance · IIIT Vadodara</p>
-  </div>
-
-  <div class="card">
-    <div class="tabs">
-      <button class="tab active" onclick="setRole('student', this)">Student</button>
-      <button class="tab" onclick="setRole('teacher', this)">Teacher</button>
-      <button class="tab" onclick="setRole('admin', this)">Admin</button>
-      <button class="tab" onclick="setRole('classroom', this)">Room</button>
+  <main class="auth-form">
+    <div class="auth-card" id="signin">
+      <div>
+        <h2>Welcome back</h2>
+        <p class="lead">Sign in to your AttendX workspace.</p>
+      </div>
+      <div class="segmented" role="group" aria-label="Account type" id="roles">
+        <button type="button" data-role="student" aria-pressed="true">Student</button>
+        <button type="button" data-role="teacher" aria-pressed="false">Faculty</button>
+        <button type="button" data-role="admin" aria-pressed="false">Admin</button>
+        <button type="button" data-role="classroom" aria-pressed="false">Room</button>
+      </div>
+      <form id="login-form" novalidate>
+        <label class="field"><span id="id-label">Student ID</span>
+          <input class="input" id="user-id" name="user_id" autocomplete="username" maxlength="32" spellcheck="false" required>
+        </label>
+        <label class="field"><span id="pw-label">Password</span>
+          <div class="pw-wrap">
+            <input class="input" id="password" name="password" type="password" autocomplete="current-password" maxlength="128" required>
+            <button type="button" class="toggle" aria-label="Show password"></button>
+          </div>
+          <span class="help" id="pw-help">First time? Use the one-time password from your admin.</span>
+        </label>
+        <div class="form-error" id="error" role="alert"></div>
+        <button class="btn primary lg block" id="submit" type="submit">Sign in</button>
+      </form>
+      <div class="trust" id="trust"></div>
     </div>
 
-    <div class="field">
-      <label id="id-label">Student ID</label>
-      <input type="text" id="user-id" placeholder="e.g. 202411052" autocomplete="off">
+    <div class="auth-card hidden" id="setup">
+      <div>
+        <h2>Set your password</h2>
+        <p class="lead">You signed in with a one-time password. Choose a new one to continue.</p>
+      </div>
+      <form id="setup-form" novalidate>
+        <label class="field"><span>One-time / current password</span>
+          <div class="pw-wrap"><input class="input" name="current" type="password" autocomplete="current-password" maxlength="128" required><button type="button" class="toggle" aria-label="Show password"></button></div>
+        </label>
+        <label class="field"><span>New password</span>
+          <div class="pw-wrap"><input class="input" name="next" type="password" autocomplete="new-password" maxlength="128" required><button type="button" class="toggle" aria-label="Show password"></button></div>
+          <span class="help">10+ characters, mixing at least three of: lowercase, uppercase, digits, symbols. Don't include your ID.</span>
+        </label>
+        <div class="strength" id="strength" data-score="0"><i></i><i></i><i></i><i></i></div>
+        <label class="field"><span>Confirm new password</span>
+          <div class="pw-wrap"><input class="input" name="confirm" type="password" autocomplete="new-password" maxlength="128" required><button type="button" class="toggle" aria-label="Show password"></button></div>
+        </label>
+        <div class="form-error" id="setup-error" role="alert"></div>
+        <button class="btn primary lg block" type="submit">Save and continue</button>
+        <button class="btn ghost block" type="button" id="setup-cancel">Sign out</button>
+      </form>
     </div>
-
-    <div class="field">
-      <label id="password-label">Password</label>
-      <input type="password" id="password" placeholder="Enter password" autocomplete="off" maxlength="64">
-      <div class="hint" id="password-hint">Default password is your ID for student/teacher on first login.</div>
-    </div>
-
-    <button class="btn-login" id="login-btn" onclick="doLogin()">Sign In</button>
-    <div class="error" id="error"></div>
-  </div>
-
-  <div class="footer">
-    <div class="dot"></div>
-    API Server · v2.0
-  </div>
+  </main>
 </div>
-
-<script>
-  const API = 'http://localhost:8000';
-  let currentRole = 'student';
-
-  const config = {
-    student: {
-      label: 'Student ID',
-      placeholder: 'e.g. 202411052',
-      passwordLabel: 'Password',
-      passwordPlaceholder: 'Enter student password',
-      hint: 'Default password is your Student ID on first login.',
-    },
-    teacher: {
-      label: 'Teacher ID',
-      placeholder: 'e.g. T001',
-      passwordLabel: 'Password',
-      passwordPlaceholder: 'Enter teacher password',
-      hint: 'Default password is your Teacher ID on first login.',
-    },
-    admin: {
-      label: 'Admin ID',
-      placeholder: 'admin',
-      passwordLabel: 'Password',
-      passwordPlaceholder: 'Enter admin password',
-      hint: 'Default admin credentials: admin / admin123',
-    },
-    classroom: {
-      label: 'Classroom ID',
-      placeholder: 'e.g. CR-2113',
-      passwordLabel: 'Room Password',
-      passwordPlaceholder: 'Enter room PIN/password',
-      hint: 'Use the classroom access PIN configured by admin.',
-    },
-  };
-
-  function setRole(role, el) {
-    currentRole = role;
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    el.classList.add('active');
-    const c = config[role];
-    document.getElementById('id-label').textContent = c.label;
-    document.getElementById('user-id').placeholder  = c.placeholder;
-    document.getElementById('password-label').textContent = c.passwordLabel;
-    document.getElementById('password').placeholder = c.passwordPlaceholder;
-    document.getElementById('password-hint').textContent = c.hint;
-    document.getElementById('error').classList.remove('show');
-    document.getElementById('user-id').value = '';
-    document.getElementById('password').value = '';
-  }
-
-  async function doLogin() {
-    const id       = document.getElementById('user-id').value.trim();
-    const password = document.getElementById('password').value;
-    const btn      = document.getElementById('login-btn');
-
-    if (!id) { showErr('Please enter your ID.'); return; }
-    if (!password) { showErr('Please enter your password.'); return; }
-
-    btn.disabled = true;
-    btn.textContent = 'Verifying…';
-    clearErr();
-
-    try {
-      if (currentRole === 'classroom') {
-        const res = await post('/lecture/classroom-login', {
-          classroom_id: id,
-          pin: password,
-        });
-        localStorage.setItem('role',         'classroom');
-        localStorage.setItem('user_id',      id);
-        localStorage.setItem('user_name',    res.room_number || id);
-        localStorage.setItem('classroom_id', id);
-        localStorage.setItem('building',     res.building || '');
-        go('classroom.html');
-      } else {
-        const auth = await post('/auth/login', {
-          role: currentRole,
-          user_id: id,
-          password,
-        });
-        save(auth.role, auth.user_id, auth.name);
-        const pageByRole = {
-          student: 'student.html',
-          teacher: 'teacher.html',
-          admin: 'admin.html',
-        };
-        go(pageByRole[auth.role] || 'login.html');
-      }
-    } catch(e) {
-      showErr(e.message || 'Cannot reach API. Is the server running?');
-    } finally {
-      btn.disabled = false;
-      btn.textContent = 'Sign In';
-    }
-  }
-
-  async function post(path, body) {
-    const r = await fetch(API + path, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    if (!r.ok) { const e = await r.json().catch(()=>{}); throw new Error(e?.detail || 'Request failed'); }
-    return r.json();
-  }
-
-  function save(role, id, name) {
-    localStorage.setItem('role', role);
-    localStorage.setItem('user_id', id);
-    localStorage.setItem('user_name', name);
-  }
-
-  function go(page) { window.location.href = page; }
-
-  function showErr(msg) {
-    const e = document.getElementById('error');
-    e.textContent = msg;
-    e.classList.add('show');
-    document.getElementById('login-btn').disabled = false;
-    document.getElementById('login-btn').textContent = 'Sign In';
-  }
-
-  function clearErr() {
-    document.getElementById('error').classList.remove('show');
-  }
-
-  document.addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
-</script>
+<script src="js/core.js"></script>
+<script src="js/login.js"></script>
 </body>
 </html>
