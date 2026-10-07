@@ -16,8 +16,9 @@ import cv2
 import numpy as np
 
 from core.database import init_pool, close_pool, get_conn, transaction
-from utils.face_utils import get_model, normalize
-from config.settings import recog as cfg
+from core.security import is_valid_id
+from utils.face_utils import encode_template, find_duplicate_face, get_model, normalize
+from config.settings import recog as cfg, security as sec_cfg
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,8 @@ async def student_exists(student_id: str) -> dict | None:
 
 
 async def save_face_encoding(student_id: str, embedding: np.ndarray) -> None:
-    embedding_bytes = embedding.astype(np.float32).tobytes()
+    # Encrypted at rest (AES-256-GCM) and bound to this student_id.
+    embedding_bytes = encode_template(student_id, embedding)
     async with transaction() as conn:
         await conn.execute(
             """
@@ -63,8 +65,8 @@ async def save_face_encoding(student_id: str, embedding: np.ndarray) -> None:
         await conn.execute(
             """
             INSERT INTO audit_log (event_type, actor_id, target_id, detail)
-            VALUES ('face_registered', 'system', $1,
-                    jsonb_build_object('method', 'insightface'))
+            VALUES ('face_registered', 'registration_terminal', $1,
+                    jsonb_build_object('method', 'insightface', 'encrypted', true))
             """,
             student_id,
         )
@@ -115,6 +117,9 @@ def _draw_registration_frame(frame, faces, samples_done, total, student_name):
 
 async def register_student() -> None:
     student_id = input("Enter Student ID: ").strip()
+    if not is_valid_id(student_id):
+        print("\n  That is not a valid student ID.")
+        return
 
     student = await student_exists(student_id)
     if not student:
@@ -211,7 +216,32 @@ async def register_student() -> None:
         return
 
     print("\n   Processing embeddings ...")
-    avg = normalize(np.mean(samples, axis=0))
+    sample_matrix = np.array([normalize(np.asarray(e, dtype=np.float32)) for e in samples])
+    avg = normalize(np.mean(sample_matrix, axis=0))
+
+    # Consistency: every sample must look like the same person. A low score
+    # means faces were swapped mid-capture (e.g. two people taking turns).
+    consistency = float(np.min(sample_matrix @ avg))
+    if consistency < 0.45:
+        print("\n  Captured samples are inconsistent (more than one face?). Registration aborted.")
+        return
+
+    duplicate = await find_duplicate_face(avg, student_id, sec_cfg.duplicate_face_threshold)
+    if duplicate:
+        dup_id, _dup_name, score = duplicate
+        print(f"\n  This face is already registered to another student ({dup_id}, match {score:.2f}).")
+        print("  One person cannot hold two attendance identities. Registration aborted.")
+        async with get_conn() as conn:
+            await conn.execute(
+                """
+                INSERT INTO audit_log (event_type, actor_id, target_id, detail)
+                VALUES ('duplicate_face_blocked', 'registration_terminal', $1,
+                        jsonb_build_object('matched_student', $2::TEXT, 'score', $3::FLOAT))
+                """,
+                student_id, dup_id, round(score, 3),
+            )
+        return
+
     await save_face_encoding(student_id, avg)
     print(f"\n  Registration complete for {student['name']}\n")
 

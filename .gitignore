@@ -1,17 +1,19 @@
-# Environment
+# Secrets & runtime state — never commit
 .env
 *.env
+!.env.example
+instance/
+uploads/
+*.key
+recognition_last_error.log
 
 # Python
 __pycache__/
 *.py[cod]
-*.pyo
-*.pyd
-.Python
 *.egg-info/
 dist/
 build/
-.eggs/
+.pytest_cache/
 
 # Virtual environments
 venv/
@@ -19,22 +21,15 @@ venv/
 .venv311/
 env/
 
-# IDE
+# IDE / OS
 .vscode/
 .idea/
 *.swp
-
-# Temporary files
-temp_*.csv
-*.db
-*.sqlite3
-
-# InsightFace model cache (large, re-downloadable)
-~/.insightface/
-
-# OS
 .DS_Store
 Thumbs.db
 
-# Selenium / pytest reports
+# Data / reports
+temp_*.csv
+*.db
+*.sqlite3
 reports/

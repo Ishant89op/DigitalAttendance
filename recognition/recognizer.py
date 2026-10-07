@@ -24,7 +24,7 @@ import numpy as np
 from core.database import init_pool, close_pool
 from utils.face_utils import get_model, load_known_faces, cosine_match
 from attendance.attendance_manager import mark_attendance
-from services.lecture_service import get_active_lecture, start_lecture
+from services.lecture_service import get_active_lecture, get_lecture_detail, start_lecture
 from config.settings import recog as cfg
 
 logger = logging.getLogger(__name__)
@@ -58,16 +58,32 @@ last_reload  : float      = 0.0
 last_seen    : dict       = {}
 frame_buffer : Counter    = Counter()
 
-ERROR_LOG_PATH = Path(__file__).resolve().parent.parent / "recognition_last_error.log"
+ERROR_LOG_PATH = Path(__file__).resolve().parent.parent / "instance" / "recognition_last_error.log"
 
 
-async def reload_faces_if_needed() -> None:
-    global known_matrix, known_names, known_ids, last_reload
-    if time.time() - last_reload < RELOAD_INTERVAL_SECS:
+loaded_course: str | None = None
+
+
+async def reload_faces_if_needed(course_id: str | None = None, force: bool = False) -> None:
+    """
+    Keep the in-memory gallery to students enrolled in the running course, so
+    a registered student from another class can never be marked here.
+    """
+    global known_matrix, known_names, known_ids, last_reload, loaded_course
+    if not force and course_id == loaded_course and time.time() - last_reload < RELOAD_INTERVAL_SECS:
         return
-    known_matrix, known_names, known_ids = await load_known_faces()
+    known_matrix, known_names, known_ids = await load_known_faces(course_id)
     last_reload = time.time()
-    logger.info("Face DB reloaded — %d registered students", len(known_ids))
+    loaded_course = course_id
+    logger.info("Face gallery loaded — %d enrolled students%s",
+                len(known_ids), f" for {course_id}" if course_id else "")
+
+
+async def _lecture_course(lecture_id: int | None) -> str | None:
+    if not lecture_id:
+        return None
+    detail = await get_lecture_detail(lecture_id)
+    return detail["course_id"] if detail else None
 
 
 def on_cooldown(student_id: str) -> bool:
@@ -89,6 +105,7 @@ def _disable_gui(reason: str) -> None:
 
 def _persist_exception(exc: Exception) -> None:
     try:
+        ERROR_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         ERROR_LOG_PATH.write_text(
             f"{time.strftime('%Y-%m-%d %H:%M:%S')}\n{traceback.format_exc()}",
             encoding="utf-8",
@@ -110,6 +127,206 @@ def _print_status(classroom_id, lecture_id, present_count, enrolled):
 def _bbox_center(face) -> tuple[float, float]:
     x1, y1, x2, y2 = [float(v) for v in face.bbox]
     return (x1 + x2) / 2.0, (y1 + y2) / 2.0
+
+
+def _bbox_area(face) -> float:
+    x1, y1, x2, y2 = [float(v) for v in face.bbox]
+    return max((x2 - x1) * (y2 - y1), 1.0)
+
+
+def _landmark_signature(face) -> np.ndarray | None:
+    """
+    Return a scale-normalized facial shape signature from 5-point landmarks.
+    If landmarks are unavailable, returns None.
+    """
+    kps = getattr(face, "kps", None)
+    if kps is None:
+        return None
+
+    points = np.asarray(kps, dtype=np.float32)
+    if points.shape[0] < 5:
+        return None
+
+    left_eye = points[0]
+    right_eye = points[1]
+    nose = points[2]
+    left_mouth = points[3]
+    right_mouth = points[4]
+
+    eye_dist = float(np.linalg.norm(left_eye - right_eye))
+    if eye_dist < 1e-6:
+        return None
+
+    eye_mid = (left_eye + right_eye) / 2.0
+    mouth_mid = (left_mouth + right_mouth) / 2.0
+
+    return np.array(
+        [
+            float(np.linalg.norm(nose - eye_mid) / eye_dist),
+            float(np.linalg.norm(mouth_mid - nose) / eye_dist),
+            float(np.linalg.norm(left_mouth - right_mouth) / eye_dist),
+            float(np.linalg.norm(left_eye - nose) / eye_dist),
+            float(np.linalg.norm(right_eye - nose) / eye_dist),
+        ],
+        dtype=np.float32,
+    )
+
+
+def _face_attr(face, key: str):
+    value = getattr(face, key, None)
+    if value is not None:
+        return value
+    if hasattr(face, "get"):
+        try:
+            return face.get(key)
+        except Exception:
+            return None
+    return None
+
+
+def _ear_from_eye(eye_pts: np.ndarray) -> float:
+    """Compute Eye Aspect Ratio from 6 eye landmarks."""
+    if eye_pts.shape[0] != 6:
+        return 0.0
+    a = float(np.linalg.norm(eye_pts[1] - eye_pts[5]))
+    b = float(np.linalg.norm(eye_pts[2] - eye_pts[4]))
+    c = float(np.linalg.norm(eye_pts[0] - eye_pts[3]))
+    if c < 1e-6:
+        return 0.0
+    return (a + b) / (2.0 * c)
+
+
+def _current_ear(face) -> float | None:
+    """
+    Return average EAR from 68 landmarks.
+    Uses standard dlib-compatible eye indices:
+      left eye: 36..41, right eye: 42..47.
+    """
+    lm = _face_attr(face, "landmark_3d_68")
+    if lm is None:
+        return None
+
+    pts = np.asarray(lm, dtype=np.float32)
+    if pts.ndim != 2 or pts.shape[0] < 68:
+        return None
+    pts2 = pts[:, :2]
+
+    left_eye = pts2[36:42]
+    right_eye = pts2[42:48]
+    left_ear = _ear_from_eye(left_eye)
+    right_ear = _ear_from_eye(right_eye)
+    if left_ear <= 0.0 or right_ear <= 0.0:
+        return None
+    return (left_ear + right_ear) / 2.0
+
+
+def _update_blink_state(face, state: dict) -> bool:
+    """
+    Update blink FSM for one frame.
+    Returns True if blink features are available for this face/frame.
+    """
+    ear = _current_ear(face)
+    if ear is None:
+        return False
+
+    open_ref = state.get("ear_open_ref")
+    if open_ref is None:
+        open_ref = ear
+    else:
+        # Slowly adapt open-eye reference while keeping it resistant to sudden drops.
+        open_ref = max(open_ref * 0.995, ear)
+    state["ear_open_ref"] = open_ref
+
+    closed_thr = max(cfg.blink_closed_min_ear, open_ref * cfg.blink_closed_ratio)
+    open_thr = max(cfg.blink_open_min_ear, open_ref * cfg.blink_open_ratio)
+    if open_thr <= closed_thr:
+        open_thr = closed_thr + 0.02
+
+    if state["blink_is_closed"]:
+        if ear >= open_thr:
+            state["blink_count"] += 1
+            state["blink_is_closed"] = False
+            state["blink_closed_frames"] = 0
+    else:
+        if ear <= closed_thr:
+            state["blink_closed_frames"] += 1
+            if state["blink_closed_frames"] >= cfg.blink_min_closed_frames:
+                state["blink_is_closed"] = True
+        else:
+            state["blink_closed_frames"] = 0
+
+    state["last_ear"] = ear
+    return True
+
+
+def _liveness_passed(sid: str, face, state_map: dict[str, dict]) -> tuple[bool, str]:
+    """
+    Multi-signal liveness:
+    - short temporal observation window
+    - accumulated center motion
+    - plus either face scale change or landmark shape variation
+    """
+    center = _bbox_center(face)
+    area = _bbox_area(face)
+    signature = _landmark_signature(face)
+
+    prev = state_map.get(sid)
+    if prev is None:
+        state_map[sid] = {
+            "center": center,
+            "area": area,
+            "signature": signature,
+            "frames": 1,
+            "motion_sum": 0.0,
+            "scale_sum": 0.0,
+            "signature_sum": 0.0,
+            "blink_count": 0,
+            "blink_is_closed": False,
+            "blink_closed_frames": 0,
+            "ear_open_ref": None,
+            "last_ear": None,
+        }
+        return False, "Liveness..."
+
+    motion = (
+        (center[0] - prev["center"][0]) ** 2
+        + (center[1] - prev["center"][1]) ** 2
+    ) ** 0.5
+    scale_delta = abs(area - prev["area"]) / max(prev["area"], 1.0)
+    signature_delta = 0.0
+    if signature is not None and prev["signature"] is not None:
+        signature_delta = float(np.linalg.norm(signature - prev["signature"]))
+
+    prev["frames"] += 1
+    prev["motion_sum"] += motion
+    prev["scale_sum"] += scale_delta
+    prev["signature_sum"] += signature_delta
+    prev["center"] = center
+    prev["area"] = area
+    prev["signature"] = signature
+
+    blink_supported = _update_blink_state(face, prev)
+
+    if prev["frames"] < cfg.liveness_required_frames:
+        return False, "Liveness..."
+
+    if prev["motion_sum"] < cfg.liveness_motion_accum_px:
+        return False, "Liveness"
+
+    has_depth_or_shape_change = (
+        prev["scale_sum"] >= cfg.liveness_scale_delta
+        or prev["signature_sum"] >= cfg.liveness_signature_delta
+    )
+    if not has_depth_or_shape_change:
+        return False, "Liveness"
+
+    if cfg.require_blink_liveness:
+        if not blink_supported:
+            return False, "Blink..."
+        if prev["blink_count"] < cfg.min_blink_count:
+            return False, f"Blink {prev['blink_count']}/{cfg.min_blink_count}"
+
+    return True, "Live"
 
 
 def _draw_frame(frame, faces, face_results, classroom_id, lecture_id, present_count, enrolled):
@@ -151,7 +368,7 @@ async def run_recognition(classroom_id: str) -> None:
     global last_reload, WINDOW_NAME
 
     last_reload = 0.0
-    await reload_faces_if_needed()
+    await reload_faces_if_needed(None, force=True)
 
     if len(known_ids) == 0:
         logger.warning("No registered faces found. Run 'python main.py register' first.")
@@ -189,15 +406,14 @@ async def run_recognition(classroom_id: str) -> None:
 
     lecture_id    = None
     last_lecture_id = None
+    current_course: str | None = None
     present_today = set()
     liveness_passed = set()
-    last_face_center = {}
+    liveness_state = {}
 
     try:
         while True:
             try:
-                await reload_faces_if_needed()
-
                 lecture_id = await get_active_lecture(classroom_id)
                 if not lecture_id and AUTO_START:
                     session = await start_lecture(classroom_id)
@@ -206,7 +422,7 @@ async def run_recognition(classroom_id: str) -> None:
                         present_today.clear()
                         frame_buffer.clear()
                         liveness_passed.clear()
-                        last_face_center.clear()
+                        liveness_state.clear()
                         if session["status"] == "resumed_today":
                             logger.info("Auto-resumed lecture #%d in %s", lecture_id, classroom_id)
                         else:
@@ -215,10 +431,14 @@ async def run_recognition(classroom_id: str) -> None:
                 if lecture_id != last_lecture_id:
                     frame_buffer.clear()
                     liveness_passed.clear()
-                    last_face_center.clear()
+                    liveness_state.clear()
                     if lecture_id is not None:
                         present_today.clear()
                     last_lecture_id = lecture_id
+                    current_course = await _lecture_course(lecture_id)
+                    await reload_faces_if_needed(current_course, force=True)
+                else:
+                    await reload_faces_if_needed(current_course)
 
                 ret, frame = cap.read()
                 if not ret:
@@ -254,22 +474,10 @@ async def run_recognition(classroom_id: str) -> None:
                             matched_this_frame.add(sid)
 
                             if cfg.enable_liveness_check and sid not in liveness_passed:
-                                center = _bbox_center(face)
-                                prev_center = last_face_center.get(sid)
-                                last_face_center[sid] = center
-
-                                if prev_center is None:
+                                live_ok, live_status = _liveness_passed(sid, face, liveness_state)
+                                if not live_ok:
                                     frame_buffer[sid] = 0
-                                    face_results.append((name, "Liveness...", (0, 210, 255)))
-                                    continue
-
-                                motion = (
-                                    (center[0] - prev_center[0]) ** 2
-                                    + (center[1] - prev_center[1]) ** 2
-                                ) ** 0.5
-                                if motion < cfg.liveness_min_motion_px:
-                                    frame_buffer[sid] = 0
-                                    face_results.append((name, "Liveness", (255, 170, 0)))
+                                    face_results.append((name, live_status, (255, 170, 0)))
                                     continue
 
                                 liveness_passed.add(sid)
@@ -310,6 +518,7 @@ async def run_recognition(classroom_id: str) -> None:
                     for sid in list(frame_buffer.keys()):
                         if sid not in matched_this_frame:
                             del frame_buffer[sid]
+                            liveness_state.pop(sid, None)
 
                 if SHOW_WINDOW:
                     try:

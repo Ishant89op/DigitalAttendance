@@ -7,8 +7,9 @@ from datetime import datetime, timezone
 
 from fastapi import HTTPException
 
-from attendance.attendance_manager import mark_attendance
 from core.database import get_conn, transaction
+
+_MAX_OPEN_DISPUTES_PER_STUDENT = 20
 
 
 async def create_dispute(
@@ -17,42 +18,70 @@ async def create_dispute(
     lecture_id: int | None,
     reason: str,
     evidence: str | None = None,
+    evidence_file: str | None = None,
 ) -> dict:
-    if not reason.strip():
+    reason = reason.strip()
+    if not reason:
         raise HTTPException(status_code=400, detail="Reason is required.")
+    if not course_id and lecture_id is None:
+        raise HTTPException(status_code=400, detail="Choose a course or a lecture.")
 
     async with transaction() as conn:
-        exists = await conn.fetchval(
-            "SELECT 1 FROM students WHERE student_id = $1 LIMIT 1",
-            student_id,
+        student = await conn.fetchrow(
+            "SELECT department, semester FROM students WHERE student_id = $1", student_id,
         )
-        if not exists:
+        if not student:
             raise HTTPException(status_code=404, detail="Student not found.")
 
         if lecture_id is not None:
             lecture = await conn.fetchrow(
-                "SELECT lecture_id, course_id FROM lecture_sessions WHERE lecture_id = $1",
-                lecture_id,
+                "SELECT course_id, status FROM lecture_sessions WHERE lecture_id = $1", lecture_id,
             )
             if not lecture:
                 raise HTTPException(status_code=404, detail="Lecture not found.")
             if course_id and lecture["course_id"] != course_id:
-                raise HTTPException(status_code=400, detail="Course and lecture mismatch.")
-            if not course_id:
-                course_id = lecture["course_id"]
+                raise HTTPException(status_code=400, detail="Course and lecture do not match.")
+            course_id = lecture["course_id"]
+
+        # Students can only dispute courses they are enrolled in.
+        enrolled = await conn.fetchval(
+            "SELECT 1 FROM courses WHERE course_id = $1 AND department = $2 AND semester = $3",
+            course_id, student["department"], student["semester"],
+        )
+        if not enrolled:
+            raise HTTPException(status_code=400, detail="You are not enrolled in this course.")
+
+        if lecture_id is not None:
+            duplicate = await conn.fetchval(
+                """
+                SELECT 1 FROM attendance_disputes
+                WHERE student_id = $1 AND lecture_id = $2 AND status = 'open'
+                """,
+                student_id, lecture_id,
+            )
+            if duplicate:
+                raise HTTPException(status_code=409, detail="You already have an open dispute for this lecture.")
+
+        open_count = await conn.fetchval(
+            "SELECT COUNT(*) FROM attendance_disputes WHERE student_id = $1 AND status = 'open'",
+            student_id,
+        )
+        if open_count >= _MAX_OPEN_DISPUTES_PER_STUDENT:
+            raise HTTPException(status_code=429, detail="Too many open disputes. Wait for a review first.")
 
         dispute_id = await conn.fetchval(
             """
             INSERT INTO attendance_disputes
-                (student_id, course_id, lecture_id, reason, evidence, status)
-            VALUES ($1, $2, $3, $4, $5, 'open')
+                (student_id, course_id, lecture_id, reason, evidence, evidence_file, status)
+            VALUES ($1, $2, $3, $4, $5, $6, 'open')
             RETURNING dispute_id
             """,
             student_id,
             course_id,
             lecture_id,
-            reason.strip(),
+            reason,
             evidence.strip() if evidence else None,
+            evidence_file,
         )
 
         await conn.execute(
@@ -62,15 +91,12 @@ async def create_dispute(
             """,
             student_id,
             str(dispute_id),
-            json.dumps(
-                {
-                    "student_id": student_id,
-                    "course_id": course_id,
-                    "lecture_id": lecture_id,
-                    "reason": reason.strip(),
-                    "ts": datetime.now(timezone.utc).isoformat(),
-                }
-            ),
+            json.dumps({
+                "course_id": course_id,
+                "lecture_id": lecture_id,
+                "has_evidence_file": bool(evidence_file),
+                "ts": datetime.now(timezone.utc).isoformat(),
+            }),
         )
 
     return {
@@ -82,24 +108,29 @@ async def create_dispute(
     }
 
 
+_DISPUTE_COLUMNS = """
+    d.dispute_id,
+    d.student_id,
+    d.course_id,
+    c.course_name,
+    d.lecture_id,
+    d.reason,
+    d.evidence,
+    d.evidence_file,
+    d.status,
+    d.reviewer_id,
+    d.reviewer_role,
+    d.resolution_note,
+    d.created_at,
+    d.reviewed_at
+"""
+
+
 async def list_student_disputes(student_id: str, limit: int = 200) -> list[dict]:
     async with get_conn() as conn:
         rows = await conn.fetch(
-            """
-            SELECT
-                d.dispute_id,
-                d.student_id,
-                d.course_id,
-                c.course_name,
-                d.lecture_id,
-                d.reason,
-                d.evidence,
-                d.status,
-                d.reviewer_id,
-                d.reviewer_role,
-                d.resolution_note,
-                d.created_at,
-                d.reviewed_at
+            f"""
+            SELECT {_DISPUTE_COLUMNS}
             FROM attendance_disputes d
             LEFT JOIN courses c ON c.course_id = d.course_id
             WHERE d.student_id = $1
@@ -121,22 +152,8 @@ async def list_disputes(
 ) -> list[dict]:
     async with get_conn() as conn:
         rows = await conn.fetch(
-            """
-            SELECT
-                d.dispute_id,
-                d.student_id,
-                s.name AS student_name,
-                d.course_id,
-                c.course_name,
-                d.lecture_id,
-                d.reason,
-                d.evidence,
-                d.status,
-                d.reviewer_id,
-                d.reviewer_role,
-                d.resolution_note,
-                d.created_at,
-                d.reviewed_at
+            f"""
+            SELECT {_DISPUTE_COLUMNS}, s.name AS student_name
             FROM attendance_disputes d
             JOIN students s ON s.student_id = d.student_id
             LEFT JOIN courses c ON c.course_id = d.course_id
@@ -145,10 +162,8 @@ async def list_disputes(
               AND (
                     $3::TEXT IS NULL
                     OR EXISTS (
-                        SELECT 1
-                        FROM course_teachers ct
-                        WHERE ct.course_id = d.course_id
-                          AND ct.teacher_id = $3
+                        SELECT 1 FROM course_teachers ct
+                        WHERE ct.course_id = d.course_id AND ct.teacher_id = $3
                     )
               )
             ORDER BY d.created_at DESC, d.dispute_id DESC
@@ -169,13 +184,10 @@ async def resolve_dispute(
     action: str,
     resolution_note: str | None = None,
 ) -> dict:
-    action = action.strip().lower()
-    reviewer_role = reviewer_role.strip().lower()
-
     if action not in {"approved", "rejected"}:
         raise HTTPException(status_code=400, detail="Action must be approved or rejected.")
     if reviewer_role not in {"teacher", "admin"}:
-        raise HTTPException(status_code=400, detail="Reviewer role must be teacher or admin.")
+        raise HTTPException(status_code=403, detail="Only teachers or admins can review disputes.")
 
     async with transaction() as conn:
         dispute = await conn.fetchrow(
@@ -189,30 +201,28 @@ async def resolve_dispute(
         )
         if not dispute:
             raise HTTPException(status_code=404, detail="Dispute not found.")
-        if dispute["status"] != "open":
-            raise HTTPException(status_code=409, detail="Dispute is already resolved.")
 
         if reviewer_role == "teacher":
             can_review = await conn.fetchval(
-                """
-                SELECT 1
-                FROM course_teachers
-                WHERE teacher_id = $1
-                  AND course_id = $2
-                LIMIT 1
-                """,
-                reviewer_id,
-                dispute["course_id"],
+                "SELECT 1 FROM course_teachers WHERE teacher_id = $1 AND course_id = $2",
+                reviewer_id, dispute["course_id"],
             )
             if not can_review:
-                raise HTTPException(status_code=403, detail="Teacher is not assigned to this course.")
+                # Do not reveal whether the dispute exists to non-owners.
+                raise HTTPException(status_code=404, detail="Dispute not found.")
+
+        if dispute["status"] != "open":
+            raise HTTPException(status_code=409, detail="Dispute is already resolved.")
 
         if action == "approved" and dispute["lecture_id"] is not None:
-            await mark_attendance(
-                dispute["student_id"],
-                int(dispute["lecture_id"]),
-                source="manual_override",
-                marked_by=reviewer_id,
+            # Same transaction as the status change: either both happen or neither.
+            await conn.execute(
+                """
+                INSERT INTO attendance (student_id, lecture_id, source, marked_by)
+                VALUES ($1, $2, 'manual_override', $3)
+                ON CONFLICT (student_id, lecture_id) DO NOTHING
+                """,
+                dispute["student_id"], int(dispute["lecture_id"]), reviewer_id,
             )
 
         await conn.execute(
@@ -239,15 +249,13 @@ async def resolve_dispute(
             """,
             reviewer_id,
             str(dispute_id),
-            json.dumps(
-                {
-                    "action": action,
-                    "reviewer_role": reviewer_role,
-                    "lecture_id": dispute["lecture_id"],
-                    "student_id": dispute["student_id"],
-                    "ts": datetime.now(timezone.utc).isoformat(),
-                }
-            ),
+            json.dumps({
+                "action": action,
+                "reviewer_role": reviewer_role,
+                "lecture_id": dispute["lecture_id"],
+                "student_id": dispute["student_id"],
+                "ts": datetime.now(timezone.utc).isoformat(),
+            }),
         )
 
     return {

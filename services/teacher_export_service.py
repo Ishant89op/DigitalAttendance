@@ -357,7 +357,15 @@ def _format_timestamp(value: object) -> str:
     return _safe_text(value)
 
 
+_FORMULA_PREFIXES = ("=", "+", "-", "@", chr(9), chr(13))
+
+
 def _safe_text(value: object) -> str:
     if value is None:
         return ""
-    return str(value)
+    text = str(value)
+    # Spreadsheet formula injection: a cell like =HYPERLINK(...) would execute
+    # when a teacher opens the export. A leading apostrophe forces plain text.
+    if isinstance(value, str) and len(text) > 1 and text.startswith(_FORMULA_PREFIXES):
+        return "'" + text
+    return text

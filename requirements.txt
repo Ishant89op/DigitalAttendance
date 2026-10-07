@@ -1,5 +1,4 @@
-# Smart Digital Attendance System
-# Install with: pip install -r requirements.txt
+# AttendX — install with: pip install -r requirements.txt
 
 # API and server
 fastapi>=0.111.0
@@ -11,12 +10,16 @@ python-multipart>=0.0.9
 asyncpg>=0.29.0
 python-dotenv>=1.0.0
 
-# Face recognition and camera
+# Security (AES-256-GCM for face templates)
+cryptography>=42.0.0
+
+# Face recognition and camera (recognizer / registration only)
 insightface>=0.7.3
+onnxruntime>=1.17.0
 opencv-python>=4.9.0.80
 numpy>=1.26.0
 
-# Testing and automation
+# Tests
 pytest>=8.2.0
-selenium>=4.21.0
-pytest-html>=4.1.1
+pytest-asyncio>=0.24.0
+httpx>=0.27.0

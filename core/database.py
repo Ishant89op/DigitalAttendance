@@ -27,13 +27,23 @@ _pool: asyncpg.Pool | None = None
 async def init_pool() -> None:
     """Call once at application startup."""
     global _pool
+    # Pass components separately: no password-in-URL escaping problems, and
+    # nothing secret ends up in logs.
     _pool = await asyncpg.create_pool(
-        dsn=db_settings.dsn,
+        host=db_settings.host,
+        port=db_settings.port,
+        user=db_settings.user,
+        password=db_settings.password or None,
+        database=db_settings.name,
         min_size=db_settings.pool_min,
         max_size=db_settings.pool_max,
         command_timeout=30,
+        server_settings={"application_name": "attendx"},
     )
-    logger.info("Database pool initialized (%s)", db_settings.dsn)
+    logger.info(
+        "Database pool initialized (%s@%s:%s/%s)",
+        db_settings.user, db_settings.host, db_settings.port, db_settings.name,
+    )
 
 
 async def close_pool() -> None:

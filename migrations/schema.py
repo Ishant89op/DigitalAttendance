@@ -1,18 +1,26 @@
 """
-Schema migration — idempotent DDL.
+Schema migration — idempotent DDL plus one-time security upgrades.
 
-Run via:  python -m migrations.schema
+Run via:  python main.py db
 Or automatically called at API startup.
 
-Changes from v2:
-  - FIXED: Removed UNIQUE(classroom_id, status) constraint which broke lecture_sessions
-    after the first closed lecture per classroom.
-  - ADDED: access_pin column to classrooms for classroom-device login.
-  - ADDED: upcoming lectures view helper index.
-  - ADDED: recognition_sessions table for persistent camera process tracking.
-    - ADDED: attendance_disputes workflow table.
-    - ADDED: defaulter_reminders table for weekly reminder tracking.
+v3 (security hardening):
+  - auth_sessions: server-side sessions (only token digests are stored)
+  - login_credentials: lockout counters, forced password change, temp-password expiry
+  - classrooms: PINs stored as scrypt hashes; plaintext access_pin column removed
+  - evidence_files: ownership record for every uploaded dispute PDF
+  - Legacy defaults (password = own ID, admin/admin123, PIN 1234) are disabled;
+    an admin issues one-time passwords instead.
+  - No credentials are seeded by SQL any more. The first admin account is
+    bootstrapped from ADMIN_LOGIN_PASSWORD or a generated one-time password.
 """
+
+import asyncio
+import logging
+import os
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 SCHEMA_SQL = """
 
@@ -23,7 +31,7 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 
 -- ─────────────────────────────────────────────
--- USERS
+-- USERS (reserved for SSO integration)
 -- ─────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS users (
     id           TEXT PRIMARY KEY DEFAULT gen_random_uuid()::TEXT,
@@ -37,15 +45,46 @@ CREATE TABLE IF NOT EXISTS users (
 
 -- ─────────────────────────────────────────────
 -- LOGIN CREDENTIALS
+-- password_hash NULL = account exists but has no usable password yet
+-- (admin must issue a one-time password).
 -- ─────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS login_credentials (
     role          TEXT NOT NULL CHECK (role IN ('admin', 'teacher', 'student')),
     principal_id  TEXT NOT NULL,
-    password_hash TEXT NOT NULL,
+    password_hash TEXT,
     created_at    TIMESTAMPTZ DEFAULT NOW(),
     updated_at    TIMESTAMPTZ DEFAULT NOW(),
     PRIMARY KEY (role, principal_id)
 );
+
+ALTER TABLE login_credentials ALTER COLUMN password_hash DROP NOT NULL;
+ALTER TABLE login_credentials ADD COLUMN IF NOT EXISTS failed_attempts      INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE login_credentials ADD COLUMN IF NOT EXISTS locked_until         TIMESTAMPTZ;
+ALTER TABLE login_credentials ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE login_credentials ADD COLUMN IF NOT EXISTS temp_expires_at      TIMESTAMPTZ;
+ALTER TABLE login_credentials ADD COLUMN IF NOT EXISTS last_login_at        TIMESTAMPTZ;
+
+
+-- ─────────────────────────────────────────────
+-- AUTH SESSIONS
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS auth_sessions (
+    token_hash           TEXT PRIMARY KEY,
+    role                 TEXT NOT NULL CHECK (role IN ('admin', 'teacher', 'student', 'classroom')),
+    principal_id         TEXT NOT NULL,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at           TIMESTAMPTZ NOT NULL,
+    revoked_at           TIMESTAMPTZ,
+    ip                   TEXT,
+    user_agent           TEXT,
+    must_change_password BOOLEAN NOT NULL DEFAULT FALSE
+);
+
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_principal
+    ON auth_sessions (role, principal_id) WHERE revoked_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_expiry
+    ON auth_sessions (expires_at);
 
 
 -- ─────────────────────────────────────────────
@@ -59,6 +98,7 @@ CREATE TABLE IF NOT EXISTS departments (
 
 -- ─────────────────────────────────────────────
 -- STUDENTS
+-- face_encoding holds an AES-256-GCM encrypted template (see core/security.py).
 -- ─────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS students (
     student_id    TEXT PRIMARY KEY,
@@ -96,58 +136,12 @@ CREATE TABLE IF NOT EXISTS classrooms (
     classroom_id TEXT PRIMARY KEY,
     room_number  TEXT NOT NULL,
     building     TEXT,
-    capacity     INTEGER,
-    access_pin   TEXT DEFAULT '1234'
+    capacity     INTEGER
 );
 
--- Add access_pin column if it doesn't exist (for existing deployments)
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'classrooms' AND column_name = 'access_pin'
-    ) THEN
-        ALTER TABLE classrooms ADD COLUMN access_pin TEXT DEFAULT '1234';
-    END IF;
-END$$;
-
-
--- ─────────────────────────────────────────────
--- DEFAULT LOGIN CREDENTIAL SEEDING
--- ─────────────────────────────────────────────
-INSERT INTO login_credentials (role, principal_id, password_hash)
-VALUES (
-    'admin',
-    'admin',
-    encode(digest('admin123', 'sha256'), 'hex')
-)
-ON CONFLICT (role, principal_id) DO NOTHING;
-
-INSERT INTO login_credentials (role, principal_id, password_hash)
-SELECT
-    'student',
-    s.student_id,
-    encode(digest(s.student_id, 'sha256'), 'hex')
-FROM students s
-WHERE NOT EXISTS (
-    SELECT 1
-    FROM login_credentials lc
-    WHERE lc.role = 'student'
-      AND lc.principal_id = s.student_id
-);
-
-INSERT INTO login_credentials (role, principal_id, password_hash)
-SELECT
-    'teacher',
-    t.teacher_id,
-    encode(digest(t.teacher_id, 'sha256'), 'hex')
-FROM teachers t
-WHERE NOT EXISTS (
-    SELECT 1
-    FROM login_credentials lc
-    WHERE lc.role = 'teacher'
-      AND lc.principal_id = t.teacher_id
-);
+ALTER TABLE classrooms ADD COLUMN IF NOT EXISTS access_pin_hash  TEXT;
+ALTER TABLE classrooms ADD COLUMN IF NOT EXISTS pin_failed_attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE classrooms ADD COLUMN IF NOT EXISTS pin_locked_until TIMESTAMPTZ;
 
 
 -- ─────────────────────────────────────────────
@@ -175,6 +169,9 @@ CREATE TABLE IF NOT EXISTS course_teachers (
     UNIQUE (course_id, teacher_id)
 );
 
+CREATE INDEX IF NOT EXISTS idx_course_teachers_teacher
+    ON course_teachers (teacher_id, course_id);
+
 
 -- ─────────────────────────────────────────────
 -- WEEKLY SCHEDULE
@@ -197,9 +194,6 @@ CREATE INDEX IF NOT EXISTS idx_schedule_classroom_day
 
 -- ─────────────────────────────────────────────
 -- LECTURE SESSIONS
--- NOTE: The old UNIQUE(classroom_id, status) constraint has been removed.
--- It incorrectly limited each classroom to one closed lecture forever.
--- Active-lecture uniqueness is enforced in application logic (lecture_service.py).
 -- ─────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS lecture_sessions (
     lecture_id   SERIAL PRIMARY KEY,
@@ -212,27 +206,24 @@ CREATE TABLE IF NOT EXISTS lecture_sessions (
     end_time     TIMESTAMPTZ
 );
 
--- Drop the broken constraint if it exists from a previous deployment
 DO $$
 BEGIN
-    IF EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conname = 'one_active_per_room'
-    ) THEN
+    IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'one_active_per_room') THEN
         ALTER TABLE lecture_sessions DROP CONSTRAINT one_active_per_room;
     END IF;
 END$$;
 
 CREATE INDEX IF NOT EXISTS idx_lecture_classroom_status
     ON lecture_sessions (classroom_id, status);
-
+CREATE INDEX IF NOT EXISTS idx_lecture_course_status
+    ON lecture_sessions (course_id, status);
 CREATE INDEX IF NOT EXISTS idx_lecture_start_time
     ON lecture_sessions (start_time DESC);
 
 
--- -------------------------------------------------------------
+-- ─────────────────────────────────────────────
 -- RECOGNITION SESSIONS
--- -------------------------------------------------------------
+-- ─────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS recognition_sessions (
     classroom_id TEXT PRIMARY KEY REFERENCES classrooms(classroom_id) ON DELETE CASCADE,
     pid          INTEGER NOT NULL,
@@ -250,7 +241,7 @@ CREATE INDEX IF NOT EXISTS idx_recognition_sessions_pid
 CREATE TABLE IF NOT EXISTS attendance (
     id         BIGSERIAL PRIMARY KEY,
     lecture_id INTEGER NOT NULL REFERENCES lecture_sessions(lecture_id),
-    student_id TEXT NOT NULL REFERENCES students(student_id),
+    student_id TEXT NOT NULL REFERENCES students(student_id) ON DELETE CASCADE,
     timestamp  TIMESTAMPTZ DEFAULT NOW(),
     source     TEXT DEFAULT 'face_recognition'
                    CHECK (source IN ('face_recognition', 'manual_override')),
@@ -267,7 +258,7 @@ CREATE INDEX IF NOT EXISTS idx_attendance_timestamp
 
 
 -- ─────────────────────────────────────────────
--- AUDIT LOG
+-- AUDIT LOG (append-only by convention; no API deletes it)
 -- ─────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS audit_log (
     log_id     BIGSERIAL PRIMARY KEY,
@@ -301,12 +292,27 @@ CREATE TABLE IF NOT EXISTS attendance_disputes (
     reviewed_at      TIMESTAMPTZ
 );
 
+ALTER TABLE attendance_disputes ADD COLUMN IF NOT EXISTS evidence_file TEXT;
+
 CREATE INDEX IF NOT EXISTS idx_disputes_student
     ON attendance_disputes (student_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_disputes_status
     ON attendance_disputes (status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_disputes_course
     ON attendance_disputes (course_id);
+
+
+-- ─────────────────────────────────────────────
+-- EVIDENCE FILES (who uploaded what — gates every download)
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS evidence_files (
+    file_name   TEXT PRIMARY KEY,
+    student_id  TEXT NOT NULL REFERENCES students(student_id) ON DELETE CASCADE,
+    sha256      TEXT NOT NULL,
+    size_bytes  INTEGER NOT NULL,
+    original_name TEXT,
+    created_at  TIMESTAMPTZ DEFAULT NOW()
+);
 
 
 -- ─────────────────────────────────────────────
@@ -332,22 +338,153 @@ CREATE INDEX IF NOT EXISTS idx_reminders_status
 CREATE INDEX IF NOT EXISTS idx_reminders_week
     ON defaulter_reminders (week_start DESC);
 
+
+-- ─────────────────────────────────────────────
+-- LEGACY CREDENTIAL CLEAN-UP
+-- Old builds seeded every account with password = its own ID (unsalted
+-- SHA-256) and admin/admin123. Those are publicly guessable, so they are
+-- disabled here; an admin issues one-time passwords instead.
+-- ─────────────────────────────────────────────
+UPDATE login_credentials
+SET password_hash = NULL, must_change_password = TRUE, updated_at = NOW()
+WHERE password_hash IS NOT NULL
+  AND password_hash !~ '^scrypt\\$'
+  AND (
+        password_hash = encode(digest(principal_id, 'sha256'), 'hex')
+     OR (role = 'admin' AND password_hash = encode(digest('admin123', 'sha256'), 'hex'))
+  );
+
+-- Every student/teacher gets a credential row (disabled until a password is issued).
+INSERT INTO login_credentials (role, principal_id, password_hash, must_change_password)
+SELECT 'student', s.student_id, NULL, TRUE FROM students s
+ON CONFLICT (role, principal_id) DO NOTHING;
+
+INSERT INTO login_credentials (role, principal_id, password_hash, must_change_password)
+SELECT 'teacher', t.teacher_id, NULL, TRUE FROM teachers t
+ON CONFLICT (role, principal_id) DO NOTHING;
 """
 
 
+async def _migrate_classroom_pins(conn) -> None:
+    """Hash legacy plaintext PINs (strong ones) and drop the plaintext column."""
+    has_plain = await conn.fetchval(
+        """
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'classrooms' AND column_name = 'access_pin'
+        """
+    )
+    if not has_plain:
+        return
+
+    from core.security import hash_secret, pin_problems
+
+    rows = await conn.fetch("SELECT classroom_id, access_pin FROM classrooms WHERE access_pin IS NOT NULL")
+    for row in rows:
+        pin = (row["access_pin"] or "").strip()
+        if pin and not pin_problems(pin):
+            pin_hash = await asyncio.to_thread(hash_secret, pin)
+            await conn.execute(
+                "UPDATE classrooms SET access_pin_hash = $1 WHERE classroom_id = $2 AND access_pin_hash IS NULL",
+                pin_hash, row["classroom_id"],
+            )
+        else:
+            logger.warning(
+                "Classroom %s had a weak legacy PIN; device login is disabled until an admin sets a new PIN.",
+                row["classroom_id"],
+            )
+    await conn.execute("ALTER TABLE classrooms DROP COLUMN access_pin")
+    logger.info("Classroom PINs migrated to scrypt hashes; plaintext column removed.")
+
+
+async def _bootstrap_admin(conn) -> None:
+    """
+    Guarantee there is a usable admin account without shipping a default
+    password. Uses ADMIN_LOGIN_ID / ADMIN_LOGIN_PASSWORD when provided,
+    otherwise writes a one-time password to instance/initial_admin_password.txt.
+    """
+    from config.settings import security as sec_cfg
+    from core.security import generate_temporary_password, hash_secret, password_problems
+
+    usable = await conn.fetchval(
+        "SELECT 1 FROM login_credentials WHERE role = 'admin' AND password_hash IS NOT NULL LIMIT 1"
+    )
+    if usable:
+        return
+
+    admin_id = os.getenv("ADMIN_LOGIN_ID", "admin").strip() or "admin"
+    env_password = os.getenv("ADMIN_LOGIN_PASSWORD", "")
+    if env_password and not password_problems(env_password, admin_id):
+        password, must_change, source = env_password, False, "ADMIN_LOGIN_PASSWORD"
+    else:
+        if env_password:
+            logger.warning("ADMIN_LOGIN_PASSWORD does not meet the password policy; ignoring it.")
+        password, must_change, source = generate_temporary_password(), True, "generated"
+
+    pw_hash = await asyncio.to_thread(hash_secret, password)
+    await conn.execute(
+        """
+        INSERT INTO login_credentials (role, principal_id, password_hash, must_change_password, updated_at)
+        VALUES ('admin', $1, $2, $3, NOW())
+        ON CONFLICT (role, principal_id) DO UPDATE
+        SET password_hash = EXCLUDED.password_hash,
+            must_change_password = EXCLUDED.must_change_password,
+            failed_attempts = 0, locked_until = NULL, updated_at = NOW()
+        """,
+        admin_id, pw_hash, must_change,
+    )
+
+    if source == "generated":
+        path = Path(sec_cfg.instance_dir)
+        path.mkdir(parents=True, exist_ok=True)
+        secret_file = path / "initial_admin_password.txt"
+        secret_file.write_text(
+            f"AttendX initial admin login\nID: {admin_id}\nOne-time password: {password}\n"
+            "You will be asked to set a new password on first sign-in. Delete this file afterwards.\n",
+            encoding="utf-8",
+        )
+        try:
+            os.chmod(secret_file, 0o600)
+        except OSError:
+            pass
+        logger.warning("Admin account '%s' bootstrapped. One-time password written to %s", admin_id, secret_file)
+    else:
+        logger.info("Admin account '%s' bootstrapped from ADMIN_LOGIN_PASSWORD.", admin_id)
+
+
+async def _encrypt_legacy_faces(conn) -> None:
+    """Older builds stored raw float32 embeddings; encrypt them in place."""
+    from core.security import encrypt_face_template, is_encrypted_template
+
+    rows = await conn.fetch("SELECT student_id, face_encoding FROM students WHERE face_encoding IS NOT NULL")
+    migrated = 0
+    for row in rows:
+        blob = bytes(row["face_encoding"])
+        if not is_encrypted_template(blob):
+            await conn.execute(
+                "UPDATE students SET face_encoding = $1 WHERE student_id = $2",
+                encrypt_face_template(row["student_id"], blob), row["student_id"],
+            )
+            migrated += 1
+    if migrated:
+        logger.info("Encrypted %d legacy face template(s) at rest.", migrated)
+
+
 async def run_migrations() -> None:
-    """Execute schema SQL against the connected pool."""
+    """Execute schema SQL and one-time security upgrades against the pool."""
     from core.database import get_conn
-    import logging
-    logger = logging.getLogger(__name__)
 
     async with get_conn() as conn:
-        await conn.execute(SCHEMA_SQL)
+        # Serialise concurrent migrators (API + recognizer starting together).
+        async with conn.transaction():
+            await conn.execute("SELECT pg_advisory_xact_lock(727274)")
+            await conn.execute(SCHEMA_SQL)
+            await _migrate_classroom_pins(conn)
+            await _encrypt_legacy_faces(conn)
+            await _bootstrap_admin(conn)
     logger.info("Schema migration complete.")
 
 
 if __name__ == "__main__":
-    import asyncio
     from core.database import init_pool, close_pool
 
     async def main():
