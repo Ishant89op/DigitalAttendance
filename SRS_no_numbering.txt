@@ -1,0 +1,522 @@
+\section{Introduction}
+
+\subsection{Purpose}
+
+This Software Requirements Specification (SRS) defines the requirements of the Smart Digital Attendance Management System implemented in this project. The system replaces manual attendance registers with a web-based platform that combines classroom face recognition, lecture-session validation, and role-based dashboards.
+
+This document is intended for developers, testers, administrators, faculty stakeholders, and institutional reviewers during the Software Development Life Cycle (SDLC).
+
+\vspace{0.3cm}
+
+\subsection{Scope}
+
+The system provides an end-to-end attendance workflow across Student, Teacher, Admin, and Classroom Device roles.
+
+Core scope includes:
+
+\begin{itemize}
+\item Role-based login and classroom PIN login.
+\item Lecture session start, end, active-session tracking, and stale-session force-close.
+\item Real-time face-recognition-based attendance marking.
+\item Manual attendance override by authorized faculty.
+\item Student attendance history with present and absent session views.
+\item Attendance dispute creation and resolution workflow.
+\item Teacher and Admin analytics dashboards.
+\item Risk forecasting and weekly defaulter reminder queue.
+\item CSV/PDF attendance exports for teacher and admin workflows.
+\item Master-data management and CSV bulk uploads.
+\item Audit logging for critical write actions.
+\end{itemize}
+
+\vspace{0.3cm}
+
+\subsection{Document Overview}
+
+Section 2 describes the overall system and architecture context.
+
+Section 3 identifies stakeholders.
+
+Section 4 defines functional and non-functional requirements.
+
+Section 5 defines external interface requirements.
+
+\section{Overall Description}
+
+\subsection{Product Perspective}
+
+The platform is a modular attendance solution built with:
+
+\begin{itemize}
+\item Frontend: Static role-based dashboards (HTML/CSS/JavaScript).
+\item Backend: FastAPI service layer and REST endpoints.
+\item Database: PostgreSQL with migration-backed schema.
+\item Recognition: InsightFace and OpenCV pipeline.
+\end{itemize}
+
+Attendance is lecture-session-bound and time-contextual. A student can be marked once per lecture, and duplicate prevention is enforced through cooldown logic and database uniqueness rules.
+
+\vspace{0.3cm}
+
+\subsection{System Components}
+
+\begin{itemize}
+\item Classroom Recognition Component:
+Captures camera frames, detects and embeds faces, matches against registered students, and submits attendance marks.
+
+\item Lecture and Session Component:
+Manages classroom login, upcoming schedule, lecture start/end, same-day resume, live status, and stale force-close.
+
+\item Attendance Component:
+Stores attendance records, supports manual override, and exposes count/list APIs.
+
+\item Dispute Component:
+Allows students to raise disputes and allows teacher/admin resolution.
+
+\item Analytics and Reporting Component:
+Provides student, teacher, and admin dashboards, risk forecasts, reminder queue, and file export.
+
+\item Administration Component:
+Manages students, teachers, courses, classrooms, schedules, classroom PINs, and CSV bulk imports.
+
+\item Audit Component:
+Captures important events such as attendance marks, overrides, disputes, and registration events.
+\end{itemize}
+
+\vspace{0.3cm}
+
+\subsection{Operational Workflow}
+
+Typical operational flow:
+
+\begin{center}
+Classroom Device $\rightarrow$ Lecture Session API $\rightarrow$ Attendance Storage $\rightarrow$ Role Dashboards and Analytics
+\end{center}
+
+Lecture sessions can be started from teacher or classroom workflows. Recognition processes are managed and monitored by the backend with session-state tracking.
+
+\vspace{0.3cm}
+
+\subsection{User Classes and Characteristics}
+
+\textbf{Students}
+
+\begin{itemize}
+\item View overall and subject-wise attendance.
+\item View lecture-wise history including absent entries.
+\item Raise and track attendance disputes.
+\item View risk forecast information.
+\end{itemize}
+
+\textbf{Faculty/Teachers}
+
+\begin{itemize}
+\item Start and end lecture attendance sessions.
+\item Monitor live attendance snapshots.
+\item Apply manual attendance override.
+\item Resolve disputes for assigned courses.
+\item Export course attendance reports.
+\end{itemize}
+
+\textbf{Administrators}
+
+\begin{itemize}
+\item Manage users, courses, classrooms, and schedules.
+\item Update classroom access PIN values.
+\item Execute CSV bulk imports.
+\item Access system analytics, reminders, risk forecast, exports, and audit logs.
+\item Reset user passwords.
+\end{itemize}
+
+\textbf{Classroom Device Operator}
+
+\begin{itemize}
+\item Login with classroom ID and PIN.
+\item View upcoming schedule.
+\item Start session from schedule context.
+\item View live attendance and end session.
+\item Trigger stale-session force-close if required.
+\end{itemize}
+
+\vspace{0.3cm}
+
+\subsection{Operating Environment}
+
+\begin{itemize}
+\item Client environment: Modern browsers (Chrome, Edge, Firefox).
+\item Recognition environment: Camera-enabled host with Python runtime.
+\item Backend runtime: FastAPI/Uvicorn server.
+\item Database runtime: PostgreSQL instance.
+\item Network: LAN/Internet connectivity between dashboards, backend, and database.
+\end{itemize}
+
+\vspace{0.3cm}
+
+\subsection{Design Constraints and Assumptions}
+
+\begin{itemize}
+\item Attendance is valid only for active lecture sessions.
+\item A student can have at most one attendance record per lecture.
+\item Face registration is required for automated biometric marking.
+\item Raw facial images are not stored as persistent attendance data.
+\item Local development currently runs on HTTP; HTTPS is expected for production-grade deployment.
+\end{itemize}
+
+\newpage
+\section{Stakeholders}
+
+\subsection{Primary Stakeholders}
+
+\textbf{Students}
+\begin{itemize}
+\item Need accurate attendance and dispute redressal.
+\item Need transparency through dashboard and history.
+\end{itemize}
+
+\textbf{Faculty/Teachers}
+\begin{itemize}
+\item Need reliable real-time attendance monitoring.
+\item Need controlled override and dispute handling.
+\end{itemize}
+
+\textbf{System Administrators}
+\begin{itemize}
+\item Need central data operations and governance controls.
+\item Need auditability, security, and operational visibility.
+\end{itemize}
+
+\subsection{Secondary Stakeholders}
+
+\textbf{Institution Management}
+\begin{itemize}
+\item Uses analytics and alerts for compliance and academic decisions.
+\end{itemize}
+
+\textbf{Development and QA Team}
+\begin{itemize}
+\item Requires clear and testable requirement definitions.
+\end{itemize}
+
+\textbf{IT Operations}
+\begin{itemize}
+\item Responsible for runtime stability, support, and deployment hygiene.
+\end{itemize}
+
+\textbf{Compliance and Regulatory Stakeholders}
+\begin{itemize}
+\item Concerned with privacy handling, data retention controls, and lawful operation.
+\end{itemize}
+
+\newpage
+\section{Specific Requirements}
+
+\subsection{Functional Requirements}
+
+\subsubsection{Authentication and Access Management}
+
+\begin{itemize}
+\item The system shall support role-based login for Student, Teacher, and Admin users.
+\item The system shall support classroom login using classroom ID and access PIN.
+\item The system shall allow users to change their own passwords.
+\item The system shall allow admins to reset passwords for target users.
+\item The system shall restrict access to role-appropriate features and APIs.
+\end{itemize}
+
+\vspace{0.3cm}
+
+\subsubsection{Lecture and Session Management}
+
+\begin{itemize}
+\item The system shall allow lecture sessions to be started per classroom.
+\item The system shall allow lecture sessions to be ended explicitly.
+\item The system shall expose active lecture status per classroom.
+\item The system shall provide lecture details and live lecture snapshots.
+\item The system shall allow stale active sessions to be force-closed.
+\item The system shall support same-day resume behavior for matching lecture context.
+\item The system shall support schedule-based and explicit course-driven session start.
+\end{itemize}
+
+\vspace{0.3cm}
+
+\subsubsection{Face Registration and Recognition}
+
+\begin{itemize}
+\item The system shall support student face registration through multi-sample capture.
+\item The system shall store generated face embeddings for registered students.
+\item The recognition pipeline shall detect faces from classroom camera frames.
+\item The system shall generate and compare embeddings against enrolled student data.
+\item Recognition shall apply similarity threshold and matching margin logic.
+\item Recognition shall support optional liveness checks.
+\item Recognition shall support per-student cooldown to avoid repeated marks.
+\item Recognition shall support process lifecycle management from backend APIs.
+\item The system shall provide fallback/manual recognition launch guidance when automatic launch cannot be confirmed.
+\end{itemize}
+
+\vspace{0.3cm}
+
+\subsubsection{Attendance Recording and Override}
+
+\begin{itemize}
+\item The system shall mark attendance automatically when recognition succeeds.
+\item The system shall prevent duplicate marks for the same student and lecture.
+\item The system shall expose attendance count and present-student listing per lecture.
+\item The system shall allow teacher-driven manual override to mark present.
+\item The system shall allow teacher-driven manual override to mark absent.
+\item Attendance write operations shall be idempotent for duplicate mark attempts.
+\end{itemize}
+
+\vspace{0.3cm}
+
+\subsubsection{Dispute Workflow}
+
+\begin{itemize}
+\item Students shall be able to create attendance disputes with reason and optional evidence.
+\item Students shall be able to view dispute history and status.
+\item Teachers and admins shall be able to view dispute queues.
+\item Dispute queue filtering shall support status, course, and teacher scope.
+\item Teachers shall resolve disputes only for assigned courses.
+\item Admins shall resolve disputes across courses.
+\item Approved disputes may trigger attendance correction for the linked lecture.
+\end{itemize}
+
+\vspace{0.3cm}
+
+\subsubsection{Analytics, Forecasting, and Alerts}
+
+\begin{itemize}
+\item The system shall provide student summary analytics with subject-wise breakdown.
+\item The system shall provide student attendance history with optional absent-session inclusion.
+\item The system shall provide student risk forecasting based on recent attendance trend.
+\item The system shall provide teacher dashboard summaries for assigned courses.
+\item The system shall provide teacher course detail with student-level percentages.
+\item The system shall provide admin dashboard with totals, trends, and department statistics.
+\item The system shall provide low-attendance alert lists.
+\item The system shall provide admin-level risk forecasting for at-risk students.
+\end{itemize}
+
+\vspace{0.3cm}
+
+\subsubsection{Reminder Queue Management}
+
+\begin{itemize}
+\item The system shall generate weekly defaulter reminders for low-attendance cases.
+\item The reminder workflow shall support forced regeneration for the same week.
+\item The system shall list reminder queue entries by status.
+\item The system shall allow reminders to be marked as sent.
+\end{itemize}
+
+\vspace{0.3cm}
+
+\subsubsection{Reporting and Export}
+
+\begin{itemize}
+\item Teachers shall be able to export course attendance reports.
+\item Admins shall be able to export filtered attendance datasets.
+\item Export shall support Excel-compatible and PDF outputs.
+\item Export filters shall support date range and academic filters.
+\end{itemize}
+
+\vspace{0.3cm}
+
+\subsubsection{Administrative Data Management}
+
+\begin{itemize}
+\item The system shall support create, list, update, and delete operations for student records.
+\item The system shall support create and list operations for teacher records.
+\item The system shall support create and list operations for course records.
+\item The system shall support create and list operations for classroom records.
+\item The system shall support classroom access PIN updates.
+\item The system shall support schedule entry creation and classroom schedule retrieval.
+\item The system shall support CSV bulk imports for students, teachers, courses, schedules, and course-teacher mappings.
+\item Bulk import operations shall report inserted and skipped row counts.
+\end{itemize}
+
+\vspace{0.3cm}
+
+\subsubsection{Audit and Operational Traceability}
+
+\begin{itemize}
+\item The system shall log critical actions in an audit trail.
+\item Audit events shall include attendance marks, manual overrides, dispute lifecycle changes, and face registration.
+\item Audit logs shall include event timestamp and actor/target identifiers.
+\item Admin users shall be able to view recent audit logs.
+\end{itemize}
+
+\vspace{0.3cm}
+
+\subsubsection{Role-Specific Functional Coverage}
+
+\textbf{Student Functionalities}
+
+\begin{itemize}
+\item View attendance summary, history, and risk forecast.
+\item Raise disputes and track dispute outcomes.
+\item Change account password.
+\end{itemize}
+
+\textbf{Teacher Functionalities}
+
+\begin{itemize}
+\item Start and end lecture sessions.
+\item Monitor live lecture attendance.
+\item Perform manual attendance override.
+\item Review and resolve course disputes.
+\item Export course attendance reports.
+\item Change account password.
+\end{itemize}
+
+\textbf{Admin Functionalities}
+
+\begin{itemize}
+\item Manage master data and classroom PINs.
+\item Run CSV bulk uploads.
+\item Access dashboard, alerts, forecasts, reminders, exports, and audit logs.
+\item Reset passwords and change own password.
+\end{itemize}
+
+\textbf{Classroom Device Functionalities}
+
+\begin{itemize}
+\item Authenticate using classroom credentials.
+\item View upcoming lectures and active session state.
+\item Start/end attendance session workflows.
+\item Display live attendance list and status.
+\item Execute force-close workflow for stale sessions when needed.
+\end{itemize}
+
+\newpage
+\subsection{Non-Functional Requirements}
+
+\subsubsection{Security and Privacy Requirements}
+
+\begin{itemize}
+\item The system shall enforce role-based authorization boundaries.
+\item Passwords shall be stored using secure hashing.
+\item Classroom access shall require PIN-based validation.
+\item The system shall avoid persistent storage of raw facial images.
+\item Audit trails shall be available for sensitive write operations.
+\item Deployment should use HTTPS for external access in production environments.
+\end{itemize}
+
+\vspace{0.3cm}
+
+\subsubsection{Performance Requirements}
+
+\begin{itemize}
+\item Recognition and attendance marking shall operate in near real-time classroom usage.
+\item Dashboard and analytics queries shall be optimized through SQL aggregation and indexed access paths.
+\item The system shall support multi-face processing per frame within configured limits.
+\item Export and analytics endpoints shall support bounded query limits to control load.
+\end{itemize}
+
+\vspace{0.3cm}
+
+\subsubsection{Reliability and Availability Requirements}
+
+\begin{itemize}
+\item Recognition process lifecycle shall support start, stop, and health checks.
+\item Dead or stale recognition sessions shall be cleaned up automatically.
+\item Attendance operations shall remain idempotent for repeated mark attempts.
+\item Lecture force-close controls shall be available to recover from stale session state.
+\item Database backup and restore procedures should be maintained operationally.
+\end{itemize}
+
+\vspace{0.3cm}
+
+\subsubsection{Accuracy Requirements}
+
+\begin{itemize}
+\item Recognition shall be based on embedding similarity with configurable thresholds.
+\item Matching shall support confidence margin controls between top candidates.
+\item Optional liveness checks should reduce false acceptance in static spoof scenarios.
+\item Cooldown and frame-buffer verification shall reduce rapid duplicate marking.
+\end{itemize}
+
+\vspace{0.3cm}
+
+\subsubsection{Usability Requirements}
+
+\begin{itemize}
+\item Each role shall have a dedicated dashboard tailored to its workflow.
+\item Operational feedback shall be shown for start/end, mark, upload, and dispute actions.
+\item Attendance data shall be presented in readable tabular formats.
+\item Export and filtering controls shall be directly accessible in teacher/admin screens.
+\end{itemize}
+
+\vspace{0.3cm}
+
+\subsubsection{Scalability Requirements}
+
+\begin{itemize}
+\item The architecture shall support growth in users, classrooms, and lecture volume.
+\item Database-backed analytics queries shall support larger historical datasets with indexing.
+\item Recognition processes shall remain classroom-scoped for operational isolation.
+\end{itemize}
+
+\vspace{0.3cm}
+
+\subsubsection{Integrity and Auditability Requirements}
+
+\begin{itemize}
+\item Attendance data shall remain consistent with lecture-session context.
+\item Duplicate attendance entries for the same student and lecture shall be prevented.
+\item Manual overrides and dispute outcomes shall be traceable via audit events.
+\item Reminder and export operations shall preserve filter and generation context.
+\end{itemize}
+
+\vspace{0.3cm}
+
+\subsubsection{Compliance Requirements}
+
+\begin{itemize}
+\item The system should align with applicable institutional and legal privacy requirements.
+\item Biometric processing shall be handled with controlled retention and access boundaries.
+\item Data deletion and correction workflows should be supported through admin governance procedures.
+\end{itemize}
+
+\newpage
+\section{External Interface Requirements}
+
+\subsection{User Interfaces}
+
+The system provides role-oriented web interfaces:
+
+\begin{itemize}
+\item Login interface with Student, Teacher, Admin, and Classroom modes.
+\item Student dashboard with summary, history, disputes, and forecast view.
+\item Teacher dashboard with course records, manual attendance, disputes, and session control.
+\item Admin dashboard with analytics, data management, reminders, exports, and audit log.
+\item Classroom interface with schedule view, start/end controls, and live attendance status.
+\end{itemize}
+
+\vspace{0.3cm}
+
+\subsection{Hardware Interfaces}
+
+\begin{itemize}
+\item Camera input devices for registration and classroom recognition.
+\item Backend host runtime for API and recognition orchestration.
+\item Database host for relational storage and analytics queries.
+\end{itemize}
+
+\vspace{0.3cm}
+
+\subsection{Software Interfaces}
+
+\begin{itemize}
+\item FastAPI REST backend for all role workflows.
+\item PostgreSQL database for transactional and analytical data.
+\item OpenCV and InsightFace for biometric detection and embedding.
+\item CSV import processing for bulk master-data onboarding.
+\item Selenium and pytest stack for automated validation.
+\end{itemize}
+
+\vspace{0.3cm}
+
+\subsection{Communication Interfaces}
+
+\begin{itemize}
+\item API communication follows REST-style JSON request/response patterns.
+\item Local development environment currently uses HTTP on the backend API base URL.
+\item Production deployments should expose the platform over HTTPS/TLS.
+\item Network transport follows standard TCP/IP infrastructure.
+\end{itemize}

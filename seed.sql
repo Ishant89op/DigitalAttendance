@@ -15,36 +15,44 @@ ON CONFLICT (classroom_id) DO NOTHING;
 -- ── COURSES ─────────────────────────────────
 INSERT INTO courses (course_id, course_name, department, semester, credits)
 VALUES
-    ('CS401', 'Computer Organisation and Architecture', 'CSE', 4, 4),
-    ('CS402', 'Database Management Systems',            'CSE', 4, 4),
-    ('CS403', 'System Software',                        'CSE', 4, 3),
-    ('CS404', 'Software Engineering',                   'CSE', 4, 3),
-    ('CS405', 'Mathematics',                            'CSE', 4, 4),
-    ('CS406', 'Economics',                              'CSE', 4, 3)
+    ('CS202', 'System Software',                             'CSE', 4, 3),
+    ('CS204', 'Database Management Systems',                 'CSE', 4, 4),
+    ('CS206', 'Software Engineering',                        'CSE', 4, 3),
+    ('CS208', 'Computer Organisation and Architecture',      'CSE', 4, 4),
+    ('MA202', 'Numerical Techniques',                        'CSE', 4, 4),
+    ('CS264', 'Database Management Systems Lab',             'CSE', 4, 4),
+    ('CS266', 'Software Engineering Lab',                    'CSE', 4, 3),
+    ('CS268', 'Computer Organisation and Architecture Lab',  'CSE', 4, 4),
+    ('MA262', 'Numerical Techniques Lab',                    'CSE', 4, 4)
 ON CONFLICT (course_id) DO NOTHING;
 
 
 -- ── TEACHERS ────────────────────────────────
 INSERT INTO teachers (teacher_id, name, email, department)
 VALUES
-    ('T001', 'Prof. COA Faculty',             'coa@diu.iiitvadodara.ac.in', 'CSE'),
-    ('T002', 'Prof. DBMS Faculty',            'dbms@diu.iiitvadodara.ac.in', 'CSE'),
-    ('T003', 'Prof. System Software Faculty', 'ss@diu.iiitvadodara.ac.in',   'CSE'),
-    ('T004', 'Prof. Software Engg Faculty',   'se@diu.iiitvadodara.ac.in',   'CSE'),
-    ('T005', 'Prof. Mathematics Faculty',     'ma@diu.iiitvadodara.ac.in',   'CSE'),
-    ('T006', 'Prof. Economics Faculty',       'eco@diu.iiitvadodara.ac.in',  'CSE')
+    ('T001', 'Varun',          'varun@diu.iiitvadodara.ac.in',           'CSE'),
+    ('T002', 'Abhishek Paul',  'dbms@diu.iiitvadodara.ac.in',            'CSE'),
+    ('T003', 'Gaurav Pareek',  'ss@diu.iiitvadodara.ac.in',              'CSE'),
+    ('T004', 'Deepika Gupta',  'se@diu.iiitvadodara.ac.in',              'CSE'),
+    ('T005', 'Mukesh Thakur',  'ma@diu.iiitvadodara.ac.in',              'CSE'),
+    ('T006', 'Uday',           'uday@diu.iiitvadodara.ac.in',            'CSE')
 ON CONFLICT (teacher_id) DO NOTHING;
 
 
 -- ── COURSE–TEACHER ASSIGNMENTS ──────────────
 INSERT INTO course_teachers (course_id, teacher_id)
 VALUES
-    ('CS401', 'T001'),
-    ('CS402', 'T002'),
-    ('CS403', 'T003'),
-    ('CS404', 'T004'),
-    ('CS405', 'T005'),
-    ('CS406', 'T006')
+    ('CS208', 'T001'),
+    ('CS208', 'T006'),
+    ('CS268', 'T001'),
+    ('CS268', 'T006'),
+    ('CS206', 'T004'),
+    ('CS266', 'T004'),
+    ('MA202', 'T005'),
+    ('MA262', 'T005'),
+    ('CS204', 'T002'),
+    ('CS264', 'T002'),
+    ('CS202', 'T003')
 ON CONFLICT (course_id, teacher_id) DO NOTHING;
 
 
@@ -63,28 +71,28 @@ ON CONFLICT (student_id) DO NOTHING;
 -- Monday
 INSERT INTO weekly_schedule (course_id, classroom_id, day_of_week, start_time, end_time)
 VALUES
-    ('CS401', 'CR-LAB',  'Monday', '09:00', '13:15'),   -- COA lab
-    ('CS401', 'CR-2113', 'Monday', '14:00', '15:30'),   -- COA theory
-    ('CS403', 'CR-2113', 'Monday', '15:30', '17:00'),   -- System Software
+    ('CS268', 'CR-LAB',  'Monday', '09:00', '13:15'),   -- COA lab
+    ('CS208', 'CR-2113', 'Monday', '14:00', '15:30'),   -- COA theory
+    ('CS202', 'CR-2113', 'Monday', '15:30', '17:00'),   -- System Software
 
 -- Tuesday
-    ('CS405', 'CR-LAB',  'Tuesday', '09:00', '11:00'),  -- MA lab
-    ('CS405', 'CR-LAB',  'Tuesday', '11:00', '13:00'),  -- MA tutorial
-    ('CS402', 'CR-2113', 'Tuesday', '14:00', '15:30'),  -- DBMS
-    ('CS404', 'CR-2113', 'Tuesday', '15:30', '17:00'),  -- Software Engg
+    ('MA262', 'CR-LAB',  'Tuesday', '09:00', '11:00'),  -- Numerical Techniques lab
+    ('MA262', 'CR-LAB',  'Tuesday', '11:00', '13:00'),  -- Numerical Techniques tutorial
+    ('CS204', 'CR-2113', 'Tuesday', '14:00', '15:30'),  -- DBMS
+    ('CS206', 'CR-2113', 'Tuesday', '15:30', '17:00'),  -- Software Engg
 
 -- Wednesday
-    ('CS402', 'CR-LAB',  'Wednesday', '10:45', '12:30'), -- DBMS lab
-    ('CS406', 'CR-2113', 'Wednesday', '14:00', '15:30'), -- Economics
-    ('CS401', 'CR-2113', 'Wednesday', '15:30', '17:00'), -- COA
+    ('CS264', 'CR-LAB',  'Wednesday', '10:45', '12:30'), -- DBMS lab
+    ('MA202', 'CR-2113', 'Wednesday', '14:00', '15:30'), -- Numerical Techniques
+    ('CS208', 'CR-2113', 'Wednesday', '15:30', '17:00'), -- COA
 
 -- Thursday
-    ('CS404', 'CR-LAB',  'Thursday', '09:00', '12:00'),  -- SE tut+lab
-    ('CS403', 'CR-2113', 'Thursday', '14:00', '15:30'),  -- System Software
-    ('CS402', 'CR-2113', 'Thursday', '15:30', '17:00'),  -- DBMS
+    ('CS266', 'CR-LAB',  'Thursday', '09:00', '12:00'),  -- SE tut+lab
+    ('CS202', 'CR-2113', 'Thursday', '14:00', '15:30'),  -- System Software
+    ('CS204', 'CR-2113', 'Thursday', '15:30', '17:00'),  -- DBMS
 
 -- Friday
-    ('CS406', 'CR-2113', 'Friday', '14:00', '15:30');    -- Economics
+    ('MA202', 'CR-2113', 'Friday', '14:00', '15:30');    -- Numerical Techniques
 
 
 -- ── VERIFY ──────────────────────────────────

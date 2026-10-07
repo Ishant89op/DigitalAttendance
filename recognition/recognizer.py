@@ -1,25 +1,11 @@
 """
-Face Recognition Engine — threaded architecture for smooth, lag-free video.
+Face Recognition Engine — camera preview with GUI auto-detection fallback.
 
-Architecture (3 independent threads):
-  ┌─────────────────┐    latest frame    ┌─────────────────┐
-  │  FrameGrabber   │ ─────────────────► │  Detector       │
-  │  Thread         │    (atomically     │  Thread         │
-  │  cap.read() at  │     overwritten)   │  model.get()    │
-  │  full camera FPS│                    │  cosine match   │
-  └─────────────────┘                    └────────┬────────┘
-          │                                       │ cached results
-          │ latest frame                          ▼
-          └──────────────────────────►  Main thread (Display)
-                                        _draw_frame()
-                                        preview.show()
-                                        30 fps, never waits
+Shows live camera window if OpenCV GUI is available, otherwise runs headless.
+To enable the window: pip uninstall opencv-python-headless -y && pip install opencv-python
 
-  AsyncWorker thread owns its own asyncio event loop.
-  DB calls (mark_attendance, get_active_lecture) are submitted
-  via run_coroutine_threadsafe() — they never block any other thread.
-
-Result: display always runs at camera FPS regardless of model speed.
+Run:
+    python main.py recognize --classroom CR-2113
 """
 
 import argparse
@@ -27,298 +13,331 @@ import asyncio
 import logging
 import os
 import sys
-import threading
 import time
+import traceback
 from collections import Counter
-from concurrent.futures import Future
+from pathlib import Path
 
 import cv2
 import numpy as np
 
 from core.database import init_pool, close_pool
 from utils.face_utils import get_model, load_known_faces, cosine_match
-from utils.preview import create_preview_window, detect_preview_backend
 from attendance.attendance_manager import mark_attendance
-from services.lecture_service import get_active_lecture, start_lecture
+from services.lecture_service import get_active_lecture, get_lecture_detail, start_lecture
 from config.settings import recog as cfg
 
 logger = logging.getLogger(__name__)
 
-# ── Tuning constants ──────────────────────────────────────────────────────────
-RECOGNITION_BUFFER   = 3      # consecutive matched frames before marking
-RELOAD_INTERVAL_SECS = 60     # how often face DB is refreshed from storage
-LECTURE_POLL_SECS    = 5      # how often to query DB for active lecture
-AUTO_START           = True   # auto-start lecture from schedule if none active
-DISPLAY_WIDTH        = 800    # preview window width
-DISPLAY_HEIGHT       = 520    # preview window height
-# ─────────────────────────────────────────────────────────────────────────────
+RECOGNITION_BUFFER   = 3
+RELOAD_INTERVAL_SECS = 60
+WAIT_POLL_SECS       = 3
+AUTO_START           = True
 
-PREVIEW_BACKEND = detect_preview_backend()
-SHOW_WINDOW = PREVIEW_BACKEND != "none"
-if PREVIEW_BACKEND == "tk":
-    print("  [Note] OpenCV GUI is unavailable. Using Tk preview window instead.\n")
-elif PREVIEW_BACKEND == "none":
-    print("  [Note] No GUI preview backend is available — running headless.")
-    print("  To restore a native preview window, run:")
+# Auto-detect GUI support
+def _has_gui():
+    try:
+        cv2.namedWindow("_test", cv2.WINDOW_NORMAL)
+        cv2.destroyWindow("_test")
+        return True
+    except Exception:
+        return False
+
+SHOW_WINDOW = _has_gui()
+WINDOW_NAME = ""
+if not SHOW_WINDOW:
+    print("  [Note] OpenCV GUI not available — running headless (terminal output only).")
+    print("  To enable camera preview window, run:")
     print("    pip uninstall opencv-python-headless -y")
-    print("    pip install --force-reinstall opencv-python\n")
+    print("    pip install opencv-python\n")
+
+known_matrix : np.ndarray = np.empty((0, cfg.embedding_dim), dtype=np.float32)
+known_names  : list[str]  = []
+known_ids    : list[str]  = []
+last_reload  : float      = 0.0
+last_seen    : dict       = {}
+frame_buffer : Counter    = Counter()
+
+ERROR_LOG_PATH = Path(__file__).resolve().parent.parent / "instance" / "recognition_last_error.log"
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# ASYNC WORKER — owns its own event loop on a daemon thread
-# All DB coroutines are submitted via submit() and run here.
-# ══════════════════════════════════════════════════════════════════════════════
-class AsyncWorker(threading.Thread):
-    """Dedicated thread that runs an asyncio event loop for all DB operations."""
-
-    def __init__(self):
-        super().__init__(daemon=True, name="AsyncWorker")
-        self.loop = asyncio.new_event_loop()
-
-    def run(self):
-        asyncio.set_event_loop(self.loop)
-        self.loop.run_forever()
-
-    def submit(self, coro) -> Future:
-        """Schedule a coroutine and return a concurrent.futures.Future."""
-        return asyncio.run_coroutine_threadsafe(coro, self.loop)
-
-    def stop(self):
-        self.loop.call_soon_threadsafe(self.loop.stop)
+loaded_course: str | None = None
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# FRAME GRABBER — runs cap.read() continuously in its own thread
-# Overwrites a single slot with the newest frame; never queues old frames.
-# ══════════════════════════════════════════════════════════════════════════════
-class FrameGrabber(threading.Thread):
-    """Continuously reads frames from the camera and exposes the latest one."""
-
-    def __init__(self, cap: cv2.VideoCapture):
-        super().__init__(daemon=True, name="FrameGrabber")
-        self._cap = cap
-        self._frame: np.ndarray | None = None
-        self._lock = threading.Lock()
-        self._stop_event = threading.Event()
-
-    def run(self):
-        while not self._stop_event.is_set():
-            ret, frame = self._cap.read()
-            if ret:
-                with self._lock:
-                    self._frame = frame
-
-    def get_latest(self) -> np.ndarray | None:
-        with self._lock:
-            return None if self._frame is None else self._frame.copy()
-
-    def stop(self):
-        self._stop_event.set()
+async def reload_faces_if_needed(course_id: str | None = None, force: bool = False) -> None:
+    """
+    Keep the in-memory gallery to students enrolled in the running course, so
+    a registered student from another class can never be marked here.
+    """
+    global known_matrix, known_names, known_ids, last_reload, loaded_course
+    if not force and course_id == loaded_course and time.time() - last_reload < RELOAD_INTERVAL_SECS:
+        return
+    known_matrix, known_names, known_ids = await load_known_faces(course_id)
+    last_reload = time.time()
+    loaded_course = course_id
+    logger.info("Face gallery loaded — %d enrolled students%s",
+                len(known_ids), f" for {course_id}" if course_id else "")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# DETECTOR — runs InsightFace in its own thread
-# Picks up the latest frame, processes it, writes results to shared state.
-# Never blocks the display thread.
-# ══════════════════════════════════════════════════════════════════════════════
-class Detector(threading.Thread):
-    """Runs face detection + matching in a background thread."""
+async def _lecture_course(lecture_id: int | None) -> str | None:
+    if not lecture_id:
+        return None
+    detail = await get_lecture_detail(lecture_id)
+    return detail["course_id"] if detail else None
 
-    def __init__(self, grabber: FrameGrabber, async_worker: AsyncWorker, classroom_id: str):
-        super().__init__(daemon=True, name="Detector")
-        self._grabber = grabber
-        self._worker  = async_worker
-        self._classroom_id = classroom_id
 
-        # Shared state — written by detector, read by display thread
-        self._results_lock = threading.Lock()
-        self._cached_faces: list       = []
-        self._cached_results: list     = []
-        self._present_today: set       = set()
-        self._lecture_id: int | None   = None
-        self._enrolled: int            = 0
+def on_cooldown(student_id: str) -> bool:
+    return (time.time() - last_seen.get(student_id, 0)) < cfg.cooldown_seconds
 
-        # Internal detection state
-        self._frame_buffer: Counter    = Counter()
-        self._last_seen: dict          = {}
-        self._known_matrix: np.ndarray = np.empty((0, cfg.embedding_dim), dtype=np.float32)
-        self._known_names: list[str]   = []
-        self._known_ids: list[str]     = []
-        self._last_reload: float       = 0.0
-        self._last_lecture_poll: float = 0.0
 
-        self._stop_event = threading.Event()
-        self._model = None
+def _disable_gui(reason: str) -> None:
+    global SHOW_WINDOW, WINDOW_NAME
+    if not SHOW_WINDOW:
+        return
+    SHOW_WINDOW = False
+    try:
+        cv2.destroyAllWindows()
+    except Exception:
+        pass
+    WINDOW_NAME = ""
+    logger.warning("Disabling camera preview and continuing headless: %s", reason)
 
-    # ── Public read-only accessors (called from display thread) ───────────────
-    def get_display_state(self):
-        """Return snapshot of current detection results for drawing."""
-        with self._results_lock:
-            return (
-                list(self._cached_faces),
-                list(self._cached_results),
-                len(self._present_today),
-                self._enrolled,
-                self._lecture_id,
-            )
 
-    # ── Internal helpers ──────────────────────────────────────────────────────
-    def _on_cooldown(self, sid: str) -> bool:
-        return (time.time() - self._last_seen.get(sid, 0)) < cfg.cooldown_seconds
+def _persist_exception(exc: Exception) -> None:
+    try:
+        ERROR_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        ERROR_LOG_PATH.write_text(
+            f"{time.strftime('%Y-%m-%d %H:%M:%S')}\n{traceback.format_exc()}",
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+    logger.exception("Recognition engine error: %s", exc)
 
-    def _reload_faces(self):
-        if time.time() - self._last_reload < RELOAD_INTERVAL_SECS:
-            return
-        fut = self._worker.submit(load_known_faces())
+
+def _print_status(classroom_id, lecture_id, present_count, enrolled):
+    bar = chr(9608) * present_count + chr(9617) * max(0, enrolled - present_count)
+    sys.stdout.write(
+        f"\r  [{classroom_id}] Lecture #{lecture_id}  "
+        f"Present: {present_count}/{enrolled}  [{bar}]   "
+    )
+    sys.stdout.flush()
+
+
+def _bbox_center(face) -> tuple[float, float]:
+    x1, y1, x2, y2 = [float(v) for v in face.bbox]
+    return (x1 + x2) / 2.0, (y1 + y2) / 2.0
+
+
+def _bbox_area(face) -> float:
+    x1, y1, x2, y2 = [float(v) for v in face.bbox]
+    return max((x2 - x1) * (y2 - y1), 1.0)
+
+
+def _landmark_signature(face) -> np.ndarray | None:
+    """
+    Return a scale-normalized facial shape signature from 5-point landmarks.
+    If landmarks are unavailable, returns None.
+    """
+    kps = getattr(face, "kps", None)
+    if kps is None:
+        return None
+
+    points = np.asarray(kps, dtype=np.float32)
+    if points.shape[0] < 5:
+        return None
+
+    left_eye = points[0]
+    right_eye = points[1]
+    nose = points[2]
+    left_mouth = points[3]
+    right_mouth = points[4]
+
+    eye_dist = float(np.linalg.norm(left_eye - right_eye))
+    if eye_dist < 1e-6:
+        return None
+
+    eye_mid = (left_eye + right_eye) / 2.0
+    mouth_mid = (left_mouth + right_mouth) / 2.0
+
+    return np.array(
+        [
+            float(np.linalg.norm(nose - eye_mid) / eye_dist),
+            float(np.linalg.norm(mouth_mid - nose) / eye_dist),
+            float(np.linalg.norm(left_mouth - right_mouth) / eye_dist),
+            float(np.linalg.norm(left_eye - nose) / eye_dist),
+            float(np.linalg.norm(right_eye - nose) / eye_dist),
+        ],
+        dtype=np.float32,
+    )
+
+
+def _face_attr(face, key: str):
+    value = getattr(face, key, None)
+    if value is not None:
+        return value
+    if hasattr(face, "get"):
         try:
-            mat, names, ids = fut.result(timeout=10)
-            self._known_matrix = mat
-            self._known_names  = names
-            self._known_ids    = ids
-            self._enrolled     = len(ids)
-            self._last_reload  = time.time()
-            logger.info("Face DB reloaded — %d registered students", len(ids))
-        except Exception as e:
-            logger.warning("Face DB reload failed: %s", e)
-
-    def _poll_lecture(self):
-        if time.monotonic() - self._last_lecture_poll < LECTURE_POLL_SECS:
-            return
-        self._last_lecture_poll = time.monotonic()
-
-        fut = self._worker.submit(get_active_lecture(self._classroom_id))
-        try:
-            lid = fut.result(timeout=5)
+            return face.get(key)
         except Exception:
-            return
-
-        if not lid and AUTO_START:
-            fut2 = self._worker.submit(start_lecture(self._classroom_id))
-            try:
-                lid = fut2.result(timeout=5)
-                if lid:
-                    logger.info("Auto-started lecture #%d in %s", lid, self._classroom_id)
-                    with self._results_lock:
-                        self._present_today.clear()
-                    self._frame_buffer.clear()
-                    with self._results_lock:
-                        self._cached_faces   = []
-                        self._cached_results = []
-            except Exception:
-                pass
-
-        with self._results_lock:
-            self._lecture_id = lid
-
-    # ── Main detection loop ───────────────────────────────────────────────────
-    def run(self):
-        self._model = get_model()
-
-        # Warm-up pass — ONNX JIT before first real frame
-        blank = np.zeros((480, 640, 3), dtype=np.uint8)
-        try:
-            self._model.get(blank)
-        except Exception:
-            pass
-
-        self._reload_faces()
-
-        while not self._stop_event.is_set():
-            self._reload_faces()
-            self._poll_lecture()
-
-            with self._results_lock:
-                current_lecture = self._lecture_id
-
-            if not current_lecture:
-                time.sleep(0.05)
-                continue
-
-            frame = self._grabber.get_latest()
-            if frame is None:
-                time.sleep(0.01)
-                continue
-
-            # ── Run InsightFace (blocking — but in its own thread, so display is fine)
-            try:
-                raw_faces = self._model.get(frame)
-            except Exception as e:
-                logger.warning("Detection error: %s", e)
-                continue
-
-            if raw_faces:
-                faces = sorted(
-                    raw_faces,
-                    key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]),
-                    reverse=True,
-                )[:cfg.max_faces_per_frame]
-            else:
-                faces = []
-
-            with self._results_lock:
-                known_matrix = self._known_matrix
-                known_ids    = self._known_ids
-                known_names  = self._known_names
-                present_snap = set(self._present_today)
-
-            face_results = []
-            pending_marks: list[tuple[str, str, float]] = []   # (sid, name, score)
-
-            for face in faces:
-                idx, score = cosine_match(face.embedding, known_matrix)
-                if idx is not None and score >= cfg.similarity_threshold:
-                    sid  = known_ids[idx]
-                    name = known_names[idx]
-                    self._frame_buffer[sid] += 1
-                    if self._frame_buffer[sid] >= RECOGNITION_BUFFER and not self._on_cooldown(sid):
-                        pending_marks.append((sid, name, score))
-                        self._frame_buffer[sid] = 0
-                    face_results.append((sid, name, sid in present_snap))
-                else:
-                    face_results.append(None)
-
-            # Fire-and-forget DB writes (non-blocking)
-            for sid, name, score in pending_marks:
-                self._do_mark(sid, name, score, current_lecture)
-
-            with self._results_lock:
-                self._cached_faces   = faces
-                self._cached_results = face_results
-
-    def _do_mark(self, sid: str, name: str, score: float, lecture_id: int):
-        """Submit attendance mark to async worker; update local state on success."""
-        def _callback(fut: Future):
-            try:
-                marked = fut.result()
-                if marked:
-                    self._last_seen[sid] = time.time()
-                    with self._results_lock:
-                        self._present_today.add(sid)
-                    sys.stdout.write("\n")
-                    logger.info("MARKED  %-20s  %-12s  score=%.3f", name, sid, score)
-            except Exception as e:
-                logger.error("Attendance mark failed for %s: %s", sid, e)
-
-        fut = self._worker.submit(mark_attendance(sid, lecture_id))
-        fut.add_done_callback(_callback)
-
-    def stop(self):
-        self._stop_event.set()
+            return None
+    return None
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# OVERLAY DRAW HELPER
-# ══════════════════════════════════════════════════════════════════════════════
+def _ear_from_eye(eye_pts: np.ndarray) -> float:
+    """Compute Eye Aspect Ratio from 6 eye landmarks."""
+    if eye_pts.shape[0] != 6:
+        return 0.0
+    a = float(np.linalg.norm(eye_pts[1] - eye_pts[5]))
+    b = float(np.linalg.norm(eye_pts[2] - eye_pts[4]))
+    c = float(np.linalg.norm(eye_pts[0] - eye_pts[3]))
+    if c < 1e-6:
+        return 0.0
+    return (a + b) / (2.0 * c)
+
+
+def _current_ear(face) -> float | None:
+    """
+    Return average EAR from 68 landmarks.
+    Uses standard dlib-compatible eye indices:
+      left eye: 36..41, right eye: 42..47.
+    """
+    lm = _face_attr(face, "landmark_3d_68")
+    if lm is None:
+        return None
+
+    pts = np.asarray(lm, dtype=np.float32)
+    if pts.ndim != 2 or pts.shape[0] < 68:
+        return None
+    pts2 = pts[:, :2]
+
+    left_eye = pts2[36:42]
+    right_eye = pts2[42:48]
+    left_ear = _ear_from_eye(left_eye)
+    right_ear = _ear_from_eye(right_eye)
+    if left_ear <= 0.0 or right_ear <= 0.0:
+        return None
+    return (left_ear + right_ear) / 2.0
+
+
+def _update_blink_state(face, state: dict) -> bool:
+    """
+    Update blink FSM for one frame.
+    Returns True if blink features are available for this face/frame.
+    """
+    ear = _current_ear(face)
+    if ear is None:
+        return False
+
+    open_ref = state.get("ear_open_ref")
+    if open_ref is None:
+        open_ref = ear
+    else:
+        # Slowly adapt open-eye reference while keeping it resistant to sudden drops.
+        open_ref = max(open_ref * 0.995, ear)
+    state["ear_open_ref"] = open_ref
+
+    closed_thr = max(cfg.blink_closed_min_ear, open_ref * cfg.blink_closed_ratio)
+    open_thr = max(cfg.blink_open_min_ear, open_ref * cfg.blink_open_ratio)
+    if open_thr <= closed_thr:
+        open_thr = closed_thr + 0.02
+
+    if state["blink_is_closed"]:
+        if ear >= open_thr:
+            state["blink_count"] += 1
+            state["blink_is_closed"] = False
+            state["blink_closed_frames"] = 0
+    else:
+        if ear <= closed_thr:
+            state["blink_closed_frames"] += 1
+            if state["blink_closed_frames"] >= cfg.blink_min_closed_frames:
+                state["blink_is_closed"] = True
+        else:
+            state["blink_closed_frames"] = 0
+
+    state["last_ear"] = ear
+    return True
+
+
+def _liveness_passed(sid: str, face, state_map: dict[str, dict]) -> tuple[bool, str]:
+    """
+    Multi-signal liveness:
+    - short temporal observation window
+    - accumulated center motion
+    - plus either face scale change or landmark shape variation
+    """
+    center = _bbox_center(face)
+    area = _bbox_area(face)
+    signature = _landmark_signature(face)
+
+    prev = state_map.get(sid)
+    if prev is None:
+        state_map[sid] = {
+            "center": center,
+            "area": area,
+            "signature": signature,
+            "frames": 1,
+            "motion_sum": 0.0,
+            "scale_sum": 0.0,
+            "signature_sum": 0.0,
+            "blink_count": 0,
+            "blink_is_closed": False,
+            "blink_closed_frames": 0,
+            "ear_open_ref": None,
+            "last_ear": None,
+        }
+        return False, "Liveness..."
+
+    motion = (
+        (center[0] - prev["center"][0]) ** 2
+        + (center[1] - prev["center"][1]) ** 2
+    ) ** 0.5
+    scale_delta = abs(area - prev["area"]) / max(prev["area"], 1.0)
+    signature_delta = 0.0
+    if signature is not None and prev["signature"] is not None:
+        signature_delta = float(np.linalg.norm(signature - prev["signature"]))
+
+    prev["frames"] += 1
+    prev["motion_sum"] += motion
+    prev["scale_sum"] += scale_delta
+    prev["signature_sum"] += signature_delta
+    prev["center"] = center
+    prev["area"] = area
+    prev["signature"] = signature
+
+    blink_supported = _update_blink_state(face, prev)
+
+    if prev["frames"] < cfg.liveness_required_frames:
+        return False, "Liveness..."
+
+    if prev["motion_sum"] < cfg.liveness_motion_accum_px:
+        return False, "Liveness"
+
+    has_depth_or_shape_change = (
+        prev["scale_sum"] >= cfg.liveness_scale_delta
+        or prev["signature_sum"] >= cfg.liveness_signature_delta
+    )
+    if not has_depth_or_shape_change:
+        return False, "Liveness"
+
+    if cfg.require_blink_liveness:
+        if not blink_supported:
+            return False, "Blink..."
+        if prev["blink_count"] < cfg.min_blink_count:
+            return False, f"Blink {prev['blink_count']}/{cfg.min_blink_count}"
+
+    return True, "Live"
+
+
 def _draw_frame(frame, faces, face_results, classroom_id, lecture_id, present_count, enrolled):
     display = frame.copy()
-    h, w = display.shape[:2]
+    _, w = display.shape[:2]
 
     for i, face in enumerate(faces):
         x1, y1, x2, y2 = [int(v) for v in face.bbox]
         if i < len(face_results) and face_results[i] is not None:
-            sid, name, is_marked = face_results[i]
-            color = (0, 255, 80) if is_marked else (0, 200, 0)
-            label = f"{name} (Marked)" if is_marked else name
+            name, status, color = face_results[i]
+            label = f"{name}({status})"
         else:
             color = (0, 60, 220)
             label = "Unknown"
@@ -328,149 +347,214 @@ def _draw_frame(frame, faces, face_results, classroom_id, lecture_id, present_co
         cv2.putText(display, label, (x1 + 3, y1 - 5),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 1, cv2.LINE_AA)
 
-    # HUD bar
-    bar_overlay = display.copy()
-    cv2.rectangle(bar_overlay, (0, 0), (w, 38), (15, 15, 30), -1)
-    cv2.addWeighted(bar_overlay, 0.75, display, 0.25, 0, display)
+    overlay = display.copy()
+    cv2.rectangle(overlay, (0, 0), (w, 38), (15, 15, 30), -1)
+    cv2.addWeighted(overlay, 0.75, display, 0.25, 0, display)
     cv2.putText(display, f"Room: {classroom_id}", (10, 26),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.55, (180, 180, 180), 1, cv2.LINE_AA)
     lect_txt = f"Lecture #{lecture_id}" if lecture_id else "No active lecture"
     cv2.putText(display, lect_txt, (w // 2 - 65, 26),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.55, (100, 220, 255), 1, cv2.LINE_AA)
-    cv2.putText(display, f"Present: {present_count}/{enrolled}", (w - 180, 26),
+    cv2.putText(display, f"Present: {present_count}/{enrolled}", (w - 190, 26),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.55, (80, 255, 120), 1, cv2.LINE_AA)
 
     if not lecture_id:
-        cv2.putText(display, "Waiting for lecture to start ...", (w // 2 - 190, h // 2),
+        cv2.putText(display, "Waiting for lecture to start ...", (w // 2 - 190, 240),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.9, (80, 180, 255), 2, cv2.LINE_AA)
     return display
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# CAMERA OPEN HELPER
-# ══════════════════════════════════════════════════════════════════════════════
-def _open_camera() -> cv2.VideoCapture | None:
-    for idx in (0, 1):
-        cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
-        if cap.isOpened():
-            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter.fourcc(*"MJPG"))
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            cap.set(cv2.CAP_PROP_FPS, 30)
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            logger.info("Camera %d opened (MJPG, 640×480, FPS=30, buffer=1)", idx)
-            return cap
-    return None
+async def run_recognition(classroom_id: str) -> None:
+    global last_reload, WINDOW_NAME
 
+    last_reload = 0.0
+    await reload_faces_if_needed(None, force=True)
 
-# ══════════════════════════════════════════════════════════════════════════════
-# MAIN ENTRY POINT
-# ══════════════════════════════════════════════════════════════════════════════
-def run_recognition(classroom_id: str) -> None:
-    """
-    Main camera + display loop.  Runs on the calling thread (process main thread).
-    All heavy work is off-loaded to background threads.
-    """
-    # ── Start async worker (DB operations) ────────────────────────────────────
-    async_worker = AsyncWorker()
-    async_worker.start()
+    if len(known_ids) == 0:
+        logger.warning("No registered faces found. Run 'python main.py register' first.")
 
-    # ── Init DB pool on the async worker's loop ────────────────────────────────
-    init_fut = async_worker.submit(init_pool())
-    try:
-        init_fut.result(timeout=15)
-    except Exception as e:
-        logger.error("DB pool init failed: %s", e)
-        async_worker.stop()
-        return
+    model = get_model()
 
-    # ── Open camera ───────────────────────────────────────────────────────────
-    cap = _open_camera()
-    if cap is None:
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        logger.warning("Camera index 0 failed — trying index 1 ...")
+        cap = cv2.VideoCapture(1)
+    if not cap.isOpened():
         logger.error("Cannot open camera. Check it is connected and not used by another app.")
-        async_worker.stop()
         return
 
-    # ── Start frame grabber thread ─────────────────────────────────────────────
-    grabber = FrameGrabber(cap)
-    grabber.start()
-
-    # ── Start detector thread ──────────────────────────────────────────────────
-    detector = Detector(grabber, async_worker, classroom_id)
-    detector.start()
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
     logger.info("=" * 55)
     logger.info("  AttendX Recognition Engine")
     logger.info("  Classroom : %s", classroom_id)
+    logger.info("  Students  : %d registered", len(known_ids))
     if SHOW_WINDOW:
         logger.info("  Camera window open — press Q or ESC to quit")
     else:
         logger.info("  Running headless — press Ctrl+C to stop")
     logger.info("=" * 55)
 
-    # ── Create preview window ──────────────────────────────────────────────────
-    preview = None
     if SHOW_WINDOW:
-        preview = create_preview_window(f"AttendX — {classroom_id}", DISPLAY_WIDTH, DISPLAY_HEIGHT)
-        if preview is None:
-            logger.warning("Preview window creation failed — running headless.")
+        try:
+            WINDOW_NAME = f"AttendX — {classroom_id}"
+            cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
+            cv2.resizeWindow(WINDOW_NAME, 800, 520)
+        except Exception as exc:
+            _disable_gui(f"failed to open preview window: {exc}")
 
-    # ── Display loop (main thread — full camera FPS, never stalls) ────────────
+    lecture_id    = None
+    last_lecture_id = None
+    current_course: str | None = None
+    present_today = set()
+    liveness_passed = set()
+    liveness_state = {}
+
     try:
         while True:
-            frame = grabber.get_latest()
-            if frame is None:
-                time.sleep(0.01)
-                continue
+            try:
+                lecture_id = await get_active_lecture(classroom_id)
+                if not lecture_id and AUTO_START:
+                    session = await start_lecture(classroom_id)
+                    if session:
+                        lecture_id = session["lecture_id"]
+                        present_today.clear()
+                        frame_buffer.clear()
+                        liveness_passed.clear()
+                        liveness_state.clear()
+                        if session["status"] == "resumed_today":
+                            logger.info("Auto-resumed lecture #%d in %s", lecture_id, classroom_id)
+                        else:
+                            logger.info("Auto-started lecture #%d in %s", lecture_id, classroom_id)
 
-            faces, face_results, present_count, enrolled, lecture_id = detector.get_display_state()
+                if lecture_id != last_lecture_id:
+                    frame_buffer.clear()
+                    liveness_passed.clear()
+                    liveness_state.clear()
+                    if lecture_id is not None:
+                        present_today.clear()
+                    last_lecture_id = lecture_id
+                    current_course = await _lecture_course(lecture_id)
+                    await reload_faces_if_needed(current_course, force=True)
+                else:
+                    await reload_faces_if_needed(current_course)
 
-            if preview is not None:
-                display = _draw_frame(frame, faces, face_results,
-                                      classroom_id, lecture_id,
-                                      present_count, enrolled)
-                keep_running = preview.show(display)
-                if not keep_running:
-                    logger.info("User quit — stopping.")
-                    break
-            else:
-                # Headless: just print status, sleep to avoid busy-loop
-                bar = chr(9608) * present_count + chr(9617) * max(0, enrolled - present_count)
-                sys.stdout.write(
-                    f"\r  [{classroom_id}] Lecture #{lecture_id}  "
-                    f"Present: {present_count}/{enrolled}  [{bar}]   "
-                )
-                sys.stdout.flush()
-                time.sleep(0.1)
+                ret, frame = cap.read()
+                if not ret:
+                    logger.warning("Camera read failed — retrying ...")
+                    await asyncio.sleep(1)
+                    continue
 
-    except KeyboardInterrupt:
+                faces        = []
+                face_results = []
+
+                if lecture_id:
+                    matched_this_frame = set()
+                    raw_faces = model.get(frame)
+                    if raw_faces:
+                        faces = sorted(
+                            raw_faces,
+                            key=lambda f: (f.bbox[2]-f.bbox[0]) * (f.bbox[3]-f.bbox[1]),
+                            reverse=True
+                        )[:cfg.max_faces_per_frame]
+
+                        for face in faces:
+                            if float(getattr(face, "det_score", 0.0)) < cfg.min_detection_score:
+                                face_results.append(None)
+                                continue
+
+                            match = cosine_match(face.embedding, known_matrix)
+                            if match.index is None or not match.accepted:
+                                face_results.append(None)
+                                continue
+
+                            sid  = known_ids[match.index]
+                            name = known_names[match.index]
+                            matched_this_frame.add(sid)
+
+                            if cfg.enable_liveness_check and sid not in liveness_passed:
+                                live_ok, live_status = _liveness_passed(sid, face, liveness_state)
+                                if not live_ok:
+                                    frame_buffer[sid] = 0
+                                    face_results.append((name, live_status, (255, 170, 0)))
+                                    continue
+
+                                liveness_passed.add(sid)
+
+                            if on_cooldown(sid) or sid in present_today:
+                                frame_buffer[sid] = 0
+                                face_results.append((name, "Present", (0, 190, 0)))
+                                continue
+
+                            frame_buffer[sid] += 1
+                            if frame_buffer[sid] >= RECOGNITION_BUFFER:
+                                marked = await mark_attendance(sid, lecture_id)
+                                last_seen[sid] = time.time()
+                                present_today.add(sid)
+                                frame_buffer[sid] = 0
+                                sys.stdout.write("\n")
+                                if marked:
+                                    logger.info(
+                                        "MARKED  %-20s  %-12s  score=%.3f  margin=%.3f",
+                                        name,
+                                        sid,
+                                        match.score,
+                                        match.margin,
+                                    )
+                                    face_results.append((name, "Marked", (0, 255, 80)))
+                                else:
+                                    logger.info(
+                                        "ALREADY PRESENT  %-20s  %-12s  score=%.3f  margin=%.3f",
+                                        name,
+                                        sid,
+                                        match.score,
+                                        match.margin,
+                                    )
+                                    face_results.append((name, "Present", (0, 190, 0)))
+                            else:
+                                face_results.append((name, "Verifying", (0, 210, 255)))
+
+                    for sid in list(frame_buffer.keys()):
+                        if sid not in matched_this_frame:
+                            del frame_buffer[sid]
+                            liveness_state.pop(sid, None)
+
+                if SHOW_WINDOW:
+                    try:
+                        display = _draw_frame(frame, faces, face_results,
+                                              classroom_id, lecture_id,
+                                              len(present_today), len(known_ids))
+                        cv2.imshow(WINDOW_NAME, display)
+                        key = cv2.waitKey(1) & 0xFF
+                        if key in (ord('q'), 27):
+                            logger.info("User quit — stopping.")
+                            break
+                    except Exception as exc:
+                        _disable_gui(str(exc))
+
+                _print_status(classroom_id, lecture_id, len(present_today), len(known_ids))
+                await asyncio.sleep(0.04)
+            except Exception as exc:
+                _persist_exception(exc)
+                await asyncio.sleep(1)
+
+    except (asyncio.CancelledError, KeyboardInterrupt):
         pass
     finally:
-        detector.stop()
-        grabber.stop()
-        grabber.join(timeout=2)
-        detector.join(timeout=5)
         cap.release()
-        if preview is not None:
-            preview.close()
+        if SHOW_WINDOW:
+            cv2.destroyAllWindows()
         sys.stdout.write("\n")
         logger.info("Recognition engine stopped.")
 
-        close_fut = async_worker.submit(close_pool())
-        try:
-            close_fut.result(timeout=5)
-        except Exception:
-            pass
-        async_worker.stop()
-        async_worker.join(timeout=3)
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# CLI entry (called from main.py)
-# ══════════════════════════════════════════════════════════════════════════════
-def main(classroom_id: str) -> None:
-    """Synchronous entry point — called by main.py cmd_recognize()."""
-    run_recognition(classroom_id)
+async def main(classroom_id: str) -> None:
+    await init_pool()
+    try:
+        await run_recognition(classroom_id)
+    finally:
+        await close_pool()
 
 
 if __name__ == "__main__":
@@ -484,4 +568,8 @@ if __name__ == "__main__":
         default=os.getenv("CLASSROOM_ID", "CR-2113"),
     )
     args = parser.parse_args()
-    run_recognition(args.classroom)
+    try:
+        asyncio.run(main(args.classroom))
+    except Exception as exc:
+        _persist_exception(exc)
+        raise

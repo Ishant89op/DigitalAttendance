@@ -16,20 +16,26 @@ import cv2
 import numpy as np
 
 from core.database import init_pool, close_pool, get_conn, transaction
-from utils.face_utils import get_model, normalize
-from utils.preview import create_preview_window, detect_preview_backend
-from config.settings import recog as cfg
+from core.security import is_valid_id
+from utils.face_utils import encode_template, find_duplicate_face, get_model, normalize
+from config.settings import recog as cfg, security as sec_cfg
 
 logger = logging.getLogger(__name__)
 
-PREVIEW_BACKEND = detect_preview_backend()
-GUI_AVAILABLE = PREVIEW_BACKEND != "none"
-if PREVIEW_BACKEND == "tk":
-    print("  [Note] OpenCV GUI is unavailable. Using Tk preview window instead.\n")
-elif PREVIEW_BACKEND == "none":
-    print("  [Note] No GUI preview backend is available — running in terminal-only mode.")
+# Detect if OpenCV GUI is available
+def _has_gui():
+    try:
+        cv2.namedWindow("_test", cv2.WINDOW_NORMAL)
+        cv2.destroyWindow("_test")
+        return True
+    except Exception:
+        return False
+
+GUI_AVAILABLE = _has_gui()
+if not GUI_AVAILABLE:
+    print("  [Note] OpenCV GUI not available — running in terminal-only mode.")
     print("  To enable camera preview, run:  pip uninstall opencv-python-headless -y")
-    print("                                  pip install --force-reinstall opencv-python\n")
+    print("                                  pip install opencv-python\n")
 
 
 async def student_exists(student_id: str) -> dict | None:
@@ -43,7 +49,8 @@ async def student_exists(student_id: str) -> dict | None:
 
 
 async def save_face_encoding(student_id: str, embedding: np.ndarray) -> None:
-    embedding_bytes = embedding.astype(np.float32).tobytes()
+    # Encrypted at rest (AES-256-GCM) and bound to this student_id.
+    embedding_bytes = encode_template(student_id, embedding)
     async with transaction() as conn:
         await conn.execute(
             """
@@ -58,8 +65,8 @@ async def save_face_encoding(student_id: str, embedding: np.ndarray) -> None:
         await conn.execute(
             """
             INSERT INTO audit_log (event_type, actor_id, target_id, detail)
-            VALUES ('face_registered', 'system', $1,
-                    jsonb_build_object('method', 'insightface'))
+            VALUES ('face_registered', 'registration_terminal', $1,
+                    jsonb_build_object('method', 'insightface', 'encrypted', true))
             """,
             student_id,
         )
@@ -110,6 +117,9 @@ def _draw_registration_frame(frame, faces, samples_done, total, student_name):
 
 async def register_student() -> None:
     student_id = input("Enter Student ID: ").strip()
+    if not is_valid_id(student_id):
+        print("\n  That is not a valid student ID.")
+        return
 
     student = await student_exists(student_id)
     if not student:
@@ -144,7 +154,10 @@ async def register_student() -> None:
     cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
-    preview = create_preview_window("AttendX — Face Registration", 800, 520) if GUI_AVAILABLE else None
+    if GUI_AVAILABLE:
+        win_name = "AttendX — Face Registration"
+        cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(win_name, 800, 520)
 
     samples      = []
     empty_frames = 0
@@ -176,37 +189,59 @@ async def register_student() -> None:
             if GUI_AVAILABLE:
                 display = _draw_registration_frame(frame, [], len(samples), cfg.samples_required, student['name'])
 
-        if preview is not None:
-            keep_running = preview.show(display)
-            if not keep_running:
+        if GUI_AVAILABLE:
+            cv2.imshow(win_name, display)
+            key = cv2.waitKey(1) & 0xFF
+            if key in (ord('q'), 27):
                 print("\n  Registration cancelled.")
                 cap.release()
-                preview.close()
+                cv2.destroyAllWindows()
                 return
 
         time.sleep(0.03)
 
-    if preview is not None and len(samples) >= cfg.samples_required:
+    if GUI_AVAILABLE and len(samples) >= cfg.samples_required:
         ret, frame = cap.read()
         if ret:
-            display = _draw_registration_frame(
-                frame, [], cfg.samples_required, cfg.samples_required, student['name']
-            )
-            for _ in range(30):
-                if not preview.show(display):
-                    break
-                time.sleep(0.04)
+            cv2.imshow(win_name, _draw_registration_frame(
+                frame, [], cfg.samples_required, cfg.samples_required, student['name']))
+            cv2.waitKey(1200)
 
     cap.release()
-    if preview is not None:
-        preview.close()
+    if GUI_AVAILABLE:
+        cv2.destroyAllWindows()
 
     if len(samples) < cfg.samples_required:
         print(f"\n  Only {len(samples)} samples captured. Registration aborted.")
         return
 
     print("\n   Processing embeddings ...")
-    avg = normalize(np.mean(samples, axis=0))
+    sample_matrix = np.array([normalize(np.asarray(e, dtype=np.float32)) for e in samples])
+    avg = normalize(np.mean(sample_matrix, axis=0))
+
+    # Consistency: every sample must look like the same person. A low score
+    # means faces were swapped mid-capture (e.g. two people taking turns).
+    consistency = float(np.min(sample_matrix @ avg))
+    if consistency < 0.45:
+        print("\n  Captured samples are inconsistent (more than one face?). Registration aborted.")
+        return
+
+    duplicate = await find_duplicate_face(avg, student_id, sec_cfg.duplicate_face_threshold)
+    if duplicate:
+        dup_id, _dup_name, score = duplicate
+        print(f"\n  This face is already registered to another student ({dup_id}, match {score:.2f}).")
+        print("  One person cannot hold two attendance identities. Registration aborted.")
+        async with get_conn() as conn:
+            await conn.execute(
+                """
+                INSERT INTO audit_log (event_type, actor_id, target_id, detail)
+                VALUES ('duplicate_face_blocked', 'registration_terminal', $1,
+                        jsonb_build_object('matched_student', $2::TEXT, 'score', $3::FLOAT))
+                """,
+                student_id, dup_id, round(score, 3),
+            )
+        return
+
     await save_face_encoding(student_id, avg)
     print(f"\n  Registration complete for {student['name']}\n")
 
